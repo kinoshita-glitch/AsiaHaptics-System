@@ -1,0 +1,25 @@
+# ==========================
+# Unity generated folders
+# ==========================
+/Unity/[Ll]ibrary/
+/Unity/[Tt]emp/
+/Unity/[Oo]bj/
+/Unity/[Ll]ogs/
+/Unity/[Uu]ser[Ss]ettings/
+/Unity/[Bb]uild/
+/Unity/[Bb]uilds/
+
+# Visual Studio
+/Unity/.vs/
+/Unity/*.csproj
+/Unity/*.sln
+/Unity/*.user
+/Unity/*.userprefs
+
+# Visual Studio Code
+/Unity/.vscode/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+Desktop.ini
