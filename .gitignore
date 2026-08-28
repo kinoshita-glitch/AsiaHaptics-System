@@ -1,25 +1,32 @@
 # ==========================
 # Unity generated folders
 # ==========================
-/Unity/[Ll]ibrary/
-/Unity/[Tt]emp/
-/Unity/[Oo]bj/
-/Unity/[Ll]ogs/
-/Unity/[Uu]ser[Ss]ettings/
-/Unity/[Bb]uild/
-/Unity/[Bb]uilds/
+/Unity_AsiaHaptics/[Ll]ibrary/
+/Unity_AsiaHaptics/[Tt]emp/
+/Unity_AsiaHaptics/[Oo]bj/
+/Unity_AsiaHaptics/[Ll]ogs/
+/Unity_AsiaHaptics/[Uu]ser[Ss]ettings/
+/Unity_AsiaHaptics/[Bb]uild/
+/Unity_AsiaHaptics/[Bb]uilds/
 
+# ==========================
 # Visual Studio
-/Unity/.vs/
-/Unity/*.csproj
-/Unity/*.sln
-/Unity/*.user
-/Unity/*.userprefs
+# ==========================
+/Unity_AsiaHaptics/.vs/
+/Unity_AsiaHaptics/*.csproj
+/Unity_AsiaHaptics/*.sln
+/Unity_AsiaHaptics/*.user
+/Unity_AsiaHaptics/*.userprefs
+/Unity_AsiaHaptics/.vsconfig
 
+# ==========================
 # Visual Studio Code
-/Unity/.vscode/
+# ==========================
+/Unity_AsiaHaptics/.vscode/
 
+# ==========================
 # OS generated files
+# ==========================
 .DS_Store
 Thumbs.db
 Desktop.ini
