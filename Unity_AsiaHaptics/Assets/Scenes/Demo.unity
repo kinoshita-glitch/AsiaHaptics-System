@@ -1802,7 +1802,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!224 &459736617
 RectTransform:
   m_ObjectHideFlags: 0
@@ -1977,7 +1977,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: 380, y: -160}
+  m_AnchoredPosition: {x: 370, y: -195}
   m_SizeDelta: {x: 200, y: 120}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &516527124
@@ -2002,10 +2002,10 @@ MonoBehaviour:
       m_Calls: []
   m_FontData:
     m_Font: {fileID: 10102, guid: 0000000000000000e000000000000000, type: 0}
-    m_FontSize: 10
+    m_FontSize: 9
     m_FontStyle: 1
     m_BestFit: 0
-    m_MinSize: 1
+    m_MinSize: 0
     m_MaxSize: 40
     m_Alignment: 3
     m_AlignByGeometry: 0
@@ -2013,26 +2013,14 @@ MonoBehaviour:
     m_HorizontalOverflow: 0
     m_VerticalOverflow: 0
     m_LineSpacing: 1
-  m_Text: 'State:Selecting
+  m_Text: 'State: Selecting
 
-    P1 Row:Process
+    Selected: RAW, A, ON, Pos1
 
-    P1:RAW, A, ON, Pos1
+    Left (Idx 0): Connected
 
-    P1 Render:WAIT
-
-    P2
-    Row:Process
-
-    P2:RAW, A, ON, Pos1
-
-    P2 Render:WAIT
-
-    Match:YES
-
-    P1:Connected
-
-    P2:Connected'
+    Right
+    (Idx 1): Connected'
 --- !u!222 &516527125
 CanvasRenderer:
   m_ObjectHideFlags: 0
@@ -4058,20 +4046,14 @@ MonoBehaviour:
   - {fileID: 1933793207}
   renderButton: {fileID: 933866398}
   statusText: {fileID: 516527124}
-  countdownText: {fileID: 459736618}
   oldActiveImages: []
   canvas: {fileID: 744276002}
-  user1CursorColor: {r: 0, g: 0.65, b: 1, a: 1}
-  user2CursorColor: {r: 1, g: 0.2, b: 0.55, a: 1}
-  cursorLineWidth: 4
-  user1CursorPadding: 8
-  user2CursorPadding: 16
-  selectedFrameAlpha: 0.5
-  selectedLineWidth: 3
-  user1GamepadIndex: 0
-  user2GamepadIndex: 1
-  countdownSeconds: 3
-  inputGuardSeconds: 0.08
+  frameColor: {r: 0, g: 0.65, b: 1, a: 1}
+  frameAlpha: 0.5
+  frameLineWidth: 3
+  framePadding: 8
+  leftGamepadIndex: 0
+  rightGamepadIndex: 1
   commandHoldSeconds: 0.06
   defaultStimulusDurationSeconds: 1.5
 --- !u!1 &1187050874

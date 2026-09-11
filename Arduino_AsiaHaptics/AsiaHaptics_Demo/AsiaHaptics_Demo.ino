@@ -9,35 +9,36 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <FS.h>
-#include <FFat.h>
-#include "sfx_audio_config.h"
+#include <FFat.h> //FFatはESP32のFlash Memory上にFAT形式のファイルシステムを作る機能．.bin波形をここへ保存
+#include "sfx_audio_config.h" //自作ヘッダ．各波形のパス，サンプル数，長さ，ファイルサイズなどが定義
 
+//ESP32をBLE XboxゲームパッドとしてPCへ見せるためのライブラリ
 #include <BleCompositeHID.h>
 #include <XboxGamepadDevice.h>
 
-#include <esp_timer.h>
+#include <esp_timer.h> //高精度タイマー．10 kHz DAC再生タイミングに利用
 #include <esp_sleep.h>
 #include <driver/rtc_io.h>
-#include <esp_heap_caps.h>
+#include <esp_heap_caps.h> //ESP32のメモリ割り当て機能．特にMALLOC_CAP_SPIRAMを指定してPSRAMへ波形を配置するために使う
 
 // ================================================================
 // Device setting
 // ================================================================
 
-#define DEVICE_ID 0
+#define DEVICE_ID 0 //ブレスレットの識別番号
 
 #define STRINGIFY(x) #x
 #define TOSTRING(x) STRINGIFY(x)
 
-#define DEVICE_NAME "ETGame " TOSTRING(DEVICE_ID)
+#define DEVICE_NAME "ETGame " TOSTRING(DEVICE_ID) //BLEデバイス名
 
-#define UNITY_AMPLITUDE_IS_STRONG_MOTOR 0
-#define DEBUG_ENABLED 1
+#define UNITY_AMPLITUDE_IS_STRONG_MOTOR 0 //UnityのSetMotorSpeeds(amplitude,command)の各値がXboxのどちらのMotor Magnitudeへ入るかを定義
+#define DEBUG_ENABLED 1 //デバック表示ON
 
 #if DEBUG_ENABLED
-#define DBG(...) Serial.printf(__VA_ARGS__)
-#define DBGLN(x) Serial.println(x)
-#else
+#define DBG(...) Serial.printf(__VA_ARGS__) //DBG(...)と書けばSerial.printfとして動く．...は任意個数の引数を受け取る可変長マクロ
+#define DBGLN(x) Serial.println(x) //1行表示用
+#else //デバッグOFF時は何もしない
 #define DBG(...) ((void)0)
 #define DBGLN(x) ((void)0)
 #endif
@@ -45,55 +46,58 @@
 // ================================================================
 // Pins
 // ================================================================
+//SPI端子
+#define SPI_SCLK 7 //SCLK = Clock
+#define SPI_SDO  8 //Serial Data Out側
+#define SPI_SDI  9 //Serial Data In側
 
-#define SPI_SCLK 7
-#define SPI_SDO  8
-#define SPI_SDI  9
-
+//CSはChip Select．どのSPI機器と通信するか選択
 #define IMU_CS 38
 #define DAC_CS 39
 
+//アンプのShutdown制御ピン．HIGHで有効，LOWで停止する構成
 #define AMP_SD 12
 
-#define LED_CON    11
-#define LED_VIB_EN 41
-#define LED_VIB    40
+//LED類
+#define LED_CON    11 //接続状態
+#define LED_VIB_EN 41 //振動回路有効
+#define LED_VIB    40 //振動中
 
-#define PIN_SLEEP   6
-#define BATTERY_PIN 10
+#define PIN_SLEEP   6 //電源/スリープスイッチ用
+#define BATTERY_PIN 10 //バッテリー電圧をADCで測るピン
 
 // ================================================================
 // Audio
 // ================================================================
 
 constexpr uint32_t SAMPLE_RATE_HZ = SFX_AUDIO_SAMPLE_RATE_HZ;
-constexpr uint32_t DAC_TIMER_US = 1000000UL / SAMPLE_RATE_HZ;
-constexpr uint32_t DAC_SPI_HZ = 8000000;
-constexpr uint16_t IDLE_DAC_CODE = SFX_AUDIO_CENTER_VALUE & 0x0FFF;
-constexpr uint8_t DEFAULT_VOLUME = 50;
-constexpr uint8_t VIB_MIN_THRESH = 3;
-constexpr uint32_t PLAYBACK_TIMEOUT_MS = 10000;
+constexpr uint32_t DAC_TIMER_US = 1000000UL / SAMPLE_RATE_HZ; //1秒1,000,000 µsなのでサンプリング周波数10 kHzなら1,000,000 / 10,000 = 100 µsごとに1サンプル送る
+constexpr uint32_t DAC_SPI_HZ = 8000000; //DACとのSPI通信速度を8 MHzにする
+constexpr uint16_t IDLE_DAC_CODE = SFX_AUDIO_CENTER_VALUE & 0x0FFF; //0x0FFFは16進数で4095．&はbit ANDなので下位12 bitだけ取り出す．DACが12 bitなので0～4095へ限定
+constexpr uint8_t DEFAULT_VOLUME = 50; //初期音量50%
+constexpr uint8_t VIB_MIN_THRESH = 3; //振幅3未満は実質0として扱う
+constexpr uint32_t PLAYBACK_TIMEOUT_MS = 10000; //異常時でも10秒経過したら再生を止める
 
-constexpr int WAVEFORM_COUNT = 12;
+constexpr int WAVEFORM_COUNT = 12; //波形は12種類
 
-static_assert(
+static_assert( //sfx_audio_config.hに12個未満しか登録されていなければコンパイルエラーにする
     SFX_AUDIO_CLIP_COUNT >= WAVEFORM_COUNT,
     "sfx_audio_config.h needs at least 12 clips."
 );
 
-SPISettings dacSpiSettings(DAC_SPI_HZ, MSBFIRST, SPI_MODE1);
+SPISettings dacSpiSettings(DAC_SPI_HZ, MSBFIRST, SPI_MODE1); //SPISettingsはSPI通信条件をまとめる型
 
 // ================================================================
 // Loaded waveform
 // ================================================================
 
-struct LoadedClip {
-    uint8_t* data = nullptr;
-    size_t sizeBytes = 0;
-    bool loaded = false;
+struct LoadedClip { //struct（構造体）は複数のデータを1つにまとめる型
+    uint8_t* data = nullptr; //PSRAM上に配置された波形データの先頭アドレスを保存．nullptrは，まだ何も指していないという意味
+    size_t sizeBytes = 0; //size_tはメモリサイズや配列サイズを表すための符号なし整数型
+    bool loaded = false; //ロード成功済みか記録
 };
 
-LoadedClip clips[WAVEFORM_COUNT];
+LoadedClip clips[WAVEFORM_COUNT]; //12個分のLoadedClipを作る
 
 // ================================================================
 // Playback state
@@ -103,6 +107,8 @@ SemaphoreHandle_t spiMutex = nullptr;
 TaskHandle_t dacTaskHandle = nullptr;
 esp_timer_handle_t dacTimer = nullptr;
 
+//volatileは，この変数は別Taskや割り込みなどによって突然変更される可能性があるので毎回メモリから読み直すようコンパイラへ伝える
+//DAC Taskとmain loopの両方から使う変数に付けている
 volatile const uint8_t* playData = nullptr;
 volatile size_t playSize = 0;
 volatile size_t playPos = 0;
@@ -120,15 +126,15 @@ uint8_t masterVolume = DEFAULT_VOLUME;
 // BLE command
 // ================================================================
 
-struct BleCommand {
+struct BleCommand { //BLEから受け取った，どの波形か，どの振幅かをまとめる
     int waveformId;
     uint8_t amplitude;
 };
 
-portMUX_TYPE bleMux = portMUX_INITIALIZER_UNLOCKED;
+portMUX_TYPE bleMux = portMUX_INITIALIZER_UNLOCKED; //BLE callbackとloopが同時にpendingCommandへアクセスしないようにする
 
-volatile bool bleCommandPending = false;
-volatile bool bleCommandArmed = true;
+volatile bool bleCommandPending = false; //まだ処理していないBLE命令があるか
+volatile bool bleCommandArmed = true; //新しい命令を受け付けられる状態か．Unityから(0,0)を受け取るとtrueになる
 
 BleCommand pendingCommand = {-1, 0};
 
@@ -136,8 +142,8 @@ BleCommand pendingCommand = {-1, 0};
 // Gamepad
 // ================================================================
 
-XboxGamepadDevice* gamepad = nullptr;
-BleCompositeHID compositeHID(DEVICE_NAME, "Mystfit", 100);
+XboxGamepadDevice* gamepad = nullptr; //Xbox Gamepadデバイスオブジェクトへのポインタ
+BleCompositeHID compositeHID(DEVICE_NAME, "Mystfit", 100); //BLE HIDデバイス本体．引数は概ね，(デバイス名,メーカー名,初期Battery Level)
 
 unsigned long lastHidReportMs = 0;
 unsigned long lastBatteryMs = 0;
@@ -162,53 +168,57 @@ String serialLine;
 // DAC & Playback Logic
 // ================================================================
 
-void dacWriteRaw(uint16_t value) {
-    digitalWrite(DAC_CS, LOW);
-    SPI.transfer16(value & 0x0FFF);
-    digitalWrite(DAC_CS, HIGH);
+void dacWriteRaw(uint16_t value) { //DAC書き込み
+    digitalWrite(DAC_CS, LOW); //DACを選択
+    SPI.transfer16(value & 0x0FFF); //16 bit SPI送信．ただし値としては12 bitに限定
+    digitalWrite(DAC_CS, HIGH); //通信終了
 }
 
-void dacPowerDown() {
+void dacPowerDown() { //DAC121S101にPower Down用制御wordを送る．Deep Sleep前に利用
     digitalWrite(DAC_CS, LOW);
     SPI.transfer16(0x3000);
     digitalWrite(DAC_CS, HIGH);
 }
 
-uint16_t applyAmplitude(uint16_t sample, uint8_t amplitude) {
+uint16_t applyAmplitude(uint16_t sample, uint8_t amplitude) { //振幅調整
+    //例えばsampleが3000なら3000 - 2048 = +952，sampleが1000なら1000 - 2048 = -1048．つまり2048を0とみなした交流波形へ変換
     int32_t centered = static_cast<int32_t>(sample) - static_cast<int32_t>(IDLE_DAC_CODE);
+    //掛け算時のオーバーフローを避けるため大きな型．振幅を，BLE amplitude 0～255 × masterVolume 0～100% でスケーリング
     int64_t scaled = static_cast<int64_t>(centered) * amplitude * masterVolume / (255LL * 100LL);
     int32_t result = static_cast<int32_t>(IDLE_DAC_CODE) + static_cast<int32_t>(scaled);
-    return static_cast<uint16_t>(constrain(result, 0, 4095));
+    return static_cast<uint16_t>(constrain(result, 0, 4095)); //DAC範囲へ制限
 }
 
-void dacTimerCallback(void*) {
+void dacTimerCallback(void*) { //タイマーが100 µsごとに呼ぶ関数．void*は任意の型のアドレスを受け取れる汎用ポインタ
     if (dacTaskHandle != nullptr) {
-        xTaskNotifyGive(dacTaskHandle);
+        xTaskNotifyGive(dacTaskHandle); //DAC Taskへ．次の1サンプルを出力するように通知
     }
 }
 
-void dacTask(void*) {
-    for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+void dacTask(void*) { //10 kHz波形生成専用DAC Task
+    for (;;) { //無限ループ．Arduinoのloop()とは独立して動き続ける
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY); //Timerから通知が来るまで待機
 
-        uint16_t output = IDLE_DAC_CODE;
-        bool consumed = false;
+        uint16_t output = IDLE_DAC_CODE; //デフォルト出力は中心値2048
+        bool consumed = false; //今回のサンプルを正常消費したか記録
 
-        if (playing && playData != nullptr && playAmplitude >= VIB_MIN_THRESH && playPos + 1 < playSize) {
+        if (playing && playData != nullptr && playAmplitude >= VIB_MIN_THRESH && playPos + 1 < playSize) { //再生中，データあり，振幅あり，まだ2 byte以上データあり，であるかを確認
             size_t pos = playPos;
-            uint16_t raw = static_cast<uint16_t>(playData[pos]) | (static_cast<uint16_t>(playData[pos + 1]) << 8);
-            uint16_t sample = raw & 0x0FFF;
-            output = applyAmplitude(sample, playAmplitude);
+            //.binファイルは1 sampleを2 byteで保存．Little Endianなので，1 byte目 = 下位8 bit，2 byte目 = 上位8 bitとして復元
+            uint16_t raw = static_cast<uint16_t>(playData[pos]) | (static_cast<uint16_t>(playData[pos + 1]) << 8); 
+            uint16_t sample = raw & 0x0FFF; //下位12 bitだけ取り出す
+            output = applyAmplitude(sample, playAmplitude); //振幅調整
             consumed = true;
         }
 
-        if (xSemaphoreTake(spiMutex, 0) == pdTRUE) {
+        if (xSemaphoreTake(spiMutex, 0) == pdTRUE) { //SPIを使う権利を取得
+            //DACへ1 sample送信
             SPI.beginTransaction(dacSpiSettings);
             dacWriteRaw(output);
             SPI.endTransaction();
-            xSemaphoreGive(spiMutex);
+            xSemaphoreGive(spiMutex); //SPIのロックを解除
             if (consumed) {
-                playPos += 2;
+                playPos += 2; //1 sample = 2 byteなので次のsampleへ進む
             }
         }
 
@@ -219,10 +229,10 @@ void dacTask(void*) {
     }
 }
 
-bool loadClip(int id) {
+bool loadClip(int id) { //FFatからPSRAMへロード
     if (id < 0 || id >= WAVEFORM_COUNT) return false;
-    const char* path = SFX_AUDIO_CLIPS[id].path;
-    File file = FFat.open(path, FILE_READ);
+    const char* path = SFX_AUDIO_CLIPS[id].path; //const char*はC/C++形式の文字列へのポインタ
+    File file = FFat.open(path, FILE_READ); //FFatからファイルを読み込み専用で開く．FileはArduinoのファイルオブジェクト
 
     if (!file || file.isDirectory()) {
         Serial.print("MISSING: "); Serial.println(path);
@@ -230,13 +240,13 @@ bool loadClip(int id) {
         return false;
     }
 
-    size_t size = file.size();
+    size_t size = file.size(); //ファイルサイズを取得
     if (size < 2) {
         Serial.print("EMPTY: "); Serial.println(path);
         file.close(); return false;
     }
 
-    uint8_t* buffer = static_cast<uint8_t*>(heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    uint8_t* buffer = static_cast<uint8_t*>(heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)); //OPI PSRAM設定が必要
     if (!buffer) {
         Serial.print("PSRAM allocation failed: "); Serial.println(path);
         file.close(); return false;
@@ -244,7 +254,7 @@ bool loadClip(int id) {
 
     size_t total = 0;
     while (total < size) {
-        size_t n = file.read(buffer + total, size - total);
+        size_t n = file.read(buffer + total, size - total); //ファイル内容をPSRAMへ順番に読み込み
         if (n == 0) break;
         total += n;
     }
@@ -295,7 +305,7 @@ void stopPlayback(bool powerDownAmp) {
     }
 }
 
-bool startPlayback(int waveformId, uint8_t amplitude) {
+bool startPlayback(int waveformId, uint8_t amplitude) { //指定した波形を指定振幅で開始．戻り値は成功/失敗
     if (waveformId < 0 || waveformId >= WAVEFORM_COUNT) return false;
     if (!clips[waveformId].loaded) {
         DBG("Waveform %d not loaded\n", waveformId);
@@ -308,18 +318,19 @@ bool startPlayback(int waveformId, uint8_t amplitude) {
     }
 
     playing = false;
-    playData = clips[waveformId].data;
+    playData = clips[waveformId].data; //対象波形のPSRAMアドレスを設定
+    //再生情報を初期化
     playSize = clips[waveformId].sizeBytes;
     playPos = 0;
     playAmplitude = amplitude;
     currentWaveformId = waveformId;
     playbackFinished = false;
-    playbackStartedMs = millis();
+    playbackStartedMs = millis(); //再生開始時刻を保存
 
-    digitalWrite(AMP_SD, HIGH);
+    digitalWrite(AMP_SD, HIGH); //アンプを有効化
     digitalWrite(LED_VIB_EN, HIGH);
     digitalWrite(LED_VIB, HIGH);
-    playing = true;
+    playing = true; //DAC Taskが波形を出力できる状態になる
 
     DBG("PLAY id=%d amp=%u\n", waveformId, amplitude);
     return true;
@@ -345,52 +356,54 @@ void checkPlaybackTimeout() {
     }
 }
 
-int decodeWaveformCommand(uint8_t value) {
+int decodeWaveformCommand(uint8_t value) { //Unityの5,10,15,...60を0,1,2,...11へ戻す
     if (value == 0) return -1;
-    int step = (static_cast<int>(value) + 2) / 5;
-    int id = step - 1;
+    int step = (static_cast<int>(value) + 2) / 5; //+2は丸め誤差を多少許容するため
+    int id = step - 1; //例えば，5 → (5+2)/5 → 1 → ID 0
     if (id < 0 || id >= WAVEFORM_COUNT) return -1;
-    int expected = 5 * (id + 1);
-    if (abs(static_cast<int>(value) - expected) > 2) return -1;
+    int expected = 5 * (id + 1); //本来あるべき値を再計算
+    if (abs(static_cast<int>(value) - expected) > 2) return -1; //±2を超えてずれていれば無効Commandとする
     return id;
 }
 
-void onVibrate(XboxGamepadOutputReportData data) {
+//XboxGamepadOutputReportDataはライブラリが定義している構造体で，weakMotorMagnitude，strongMotorMagnitudeなどが入っている
+void onVibrate(XboxGamepadOutputReportData data) { //PCからXbox rumble output reportを受信したとき呼ばれる
 #if UNITY_AMPLITUDE_IS_STRONG_MOTOR
     uint8_t amplitude = data.strongMotorMagnitude;
     uint8_t command = data.weakMotorMagnitude;
-#else
+#else //今回はUNITY_AMPLITUDE_IS_STRONG_MOTOR = 0なのでこっち
     uint8_t amplitude = data.weakMotorMagnitude;
     uint8_t command = data.strongMotorMagnitude;
 #endif
 
     DBG("RUMBLE weak=%u strong=%u amp=%u cmd=%u\n", data.weakMotorMagnitude, data.strongMotorMagnitude, amplitude, command);
 
-    if (amplitude == 0 && command == 0) {
+    if (amplitude == 0 && command == 0) { //Unityの0,0は，再生停止命令ではなく次の新規BLE命令を受付可能にするために使っている
         bleCommandArmed = true;
         return;
     }
-    if (!bleCommandArmed) return;
+    if (!bleCommandArmed) return; //同じrumble packetが何度も来ても，同じ波形を何度も開始しないようにしている
 
-    int id = decodeWaveformCommand(command);
+    int id = decodeWaveformCommand(command); //5～60をID 0～11へ変換
     if (id < 0) return;
 
-    bleCommandArmed = false;
-    portENTER_CRITICAL(&bleMux);
+    bleCommandArmed = false; //一度受理したらロック
+    portENTER_CRITICAL(&bleMux); //ここから他処理に割り込まれず，安全に共有データを書き込み
+    //BLE callbackでは直接再生せず，再生命令が来ていますというデータだけ保存
     pendingCommand.waveformId = id;
     pendingCommand.amplitude = amplitude;
     bleCommandPending = true;
-    portEXIT_CRITICAL(&bleMux);
+    portEXIT_CRITICAL(&bleMux); //Critical Section終了
 }
 
-void serviceBleCommand() {
+void serviceBleCommand() { //Arduinoのloop()側でpending commandを確認
     if (!bleCommandPending) return;
-    BleCommand cmd;
+    BleCommand cmd; //ローカルコピー用変数
     portENTER_CRITICAL(&bleMux);
-    cmd = pendingCommand;
+    cmd = pendingCommand; //共有領域から安全に取り出し
     bleCommandPending = false;
     portEXIT_CRITICAL(&bleMux);
-    startPlayback(cmd.waveformId, cmd.amplitude);
+    startPlayback(cmd.waveformId, cmd.amplitude); //実際の再生を開始
 }
 
 uint8_t batteryPercent(float voltage) {
@@ -436,17 +449,17 @@ void checkSleep() {
     }
 }
 
-void handleSerialCommand(String line) {
-    line.trim();
-    if (line == "list") { printClipList(); return; }
-    if (line == "stop") { stopPlayback(false); return; }
-    if (line.startsWith("volume ")) {
-        int value = line.substring(7).toInt();
+void handleSerialCommand(String line) { //StringはArduinoの文字列クラス．Serial Monitorから送られた1行を保存
+    line.trim(); //前後の空白や改行を除去
+    if (line == "list") { printClipList(); return; } //波形一覧表示
+    if (line == "stop") { stopPlayback(false); return; } //再生停止
+    if (line.startsWith("volume ")) { //例えば，volume 50を処理
+        int value = line.substring(7).toInt(); //7文字目以降を取り出して整数化
         masterVolume = constrain(value, 0, 100);
         Serial.printf("Volume = %u%%\n", masterVolume);
         return;
     }
-    if (line.startsWith("play ")) {
+    if (line.startsWith("play ")) { //play 0 255のように，waveform ID，amplitudeを指定
         int space = line.indexOf(' ', 5);
         int id; int amp = 255;
         if (space < 0) id = line.substring(5).toInt();
@@ -475,13 +488,14 @@ void serviceSerial() {
 // ================================================================
 
 void setup() {
-    Serial.begin(115200);
+    Serial.begin(115200); //USB Serial通信を115200 baudで開始
     delay(300);
 
     Serial.println();
     Serial.println("Bracelet BLE + DAC player (Receiver Only)");
     Serial.print("Device: "); Serial.println(DEVICE_NAME);
 
+    //各ピンの入出力と初期値を設定
     pinMode(IMU_CS, OUTPUT); digitalWrite(IMU_CS, HIGH);
     pinMode(DAC_CS, OUTPUT); digitalWrite(DAC_CS, HIGH);
     pinMode(AMP_SD, OUTPUT); digitalWrite(AMP_SD, LOW);
@@ -497,43 +511,45 @@ void setup() {
     pinMode(BATTERY_PIN, INPUT);
     lastSleepState = digitalRead(PIN_SLEEP);
 
-    analogReadResolution(12);
-    analogSetPinAttenuation(BATTERY_PIN, ADC_11db);
+    analogReadResolution(12); //ADCを12 bit，0～4095にする
+    analogSetPinAttenuation(BATTERY_PIN, ADC_11db); //比較的高い電圧までADCで測れる設定
 
-    spiMutex = xSemaphoreCreateMutex();
-    SPI.begin(SPI_SCLK, SPI_SDO, SPI_SDI);
+    spiMutex = xSemaphoreCreateMutex(); //SPI用Mutexを作る
+    SPI.begin(SPI_SCLK, SPI_SDO, SPI_SDI); //SPIを開始
     SPI.beginTransaction(dacSpiSettings);
     dacWriteRaw(IDLE_DAC_CODE);
     SPI.endTransaction();
 
-    if (!FFat.begin(false)) {
+    if (!FFat.begin(false)) { //FFatをマウント．falseなのでマウント失敗時に自動フォーマットしない
         Serial.println("ERROR: FFat mount failed");
     } else {
         Serial.println("FFat mounted");
-        loadAllClips(); printClipList();
+        loadAllClips(); //12波形をFFatからPSRAMへ読み込み
+        printClipList();
     }
 
+    //DAC Task作成．引数は，dacTask：実行関数，"dac"：Task名，4096：Stackサイズ，configMAX_PRIORITIES - 1：非常に高い優先度，&dacTaskHandle：作成したTaskのHandle保存先，1：Core 1
     xTaskCreatePinnedToCore(dacTask, "dac", 4096, nullptr, configMAX_PRIORITIES - 1, &dacTaskHandle, 1);
-    esp_timer_create_args_t args = {};
-    args.callback = dacTimerCallback;
-    args.dispatch_method = ESP_TIMER_TASK;
+    esp_timer_create_args_t args = {}; //Timer設定用構造体．{}でゼロ初期化
+    args.callback = dacTimerCallback; //Timer発火時に呼ぶ関数
+    args.dispatch_method = ESP_TIMER_TASK; //Timer callbackをESP Timer Task上で実行
     args.name = "dac10k";
     esp_timer_create(&args, &dacTimer);
-    esp_timer_start_periodic(dacTimer, DAC_TIMER_US);
+    esp_timer_start_periodic(dacTimer, DAC_TIMER_US); //100 µs周期，つまり10 kHzでTimerを開始
 
     auto* cfg = new XboxSeriesXControllerDeviceConfiguration();
-    BLEHostConfiguration hostCfg = cfg->getIdealHostConfiguration();
-    gamepad = new XboxGamepadDevice(cfg);
-    compositeHID.addDevice(gamepad);
-    gamepad->onVibrate.attach(FunctionSlot<XboxGamepadOutputReportData>(onVibrate));
-    compositeHID.begin(hostCfg);
+    BLEHostConfiguration hostCfg = cfg->getIdealHostConfiguration(); //Xbox Gamepadに適したBLE Host設定を取得
+    gamepad = new XboxGamepadDevice(cfg); //Gamepad本体を生成
+    compositeHID.addDevice(gamepad); //BLE HIDへGamepadを追加
+    gamepad->onVibrate.attach(FunctionSlot<XboxGamepadOutputReportData>(onVibrate)); //PCからrumble命令が来たとき，onVibrate()を呼ぶよう登録
+    compositeHID.begin(hostCfg); //BLE HIDを開始．ここからPCにXbox Controllerとして見えるようになる
 
-    gamepad->setLeftThumb(0, 0);
+    gamepad->setLeftThumb(0, 0); //左スティックを中央に
     gamepad->setRightThumb(0, 0);
-    gamepad->release(XBOX_BUTTON_A);
+    gamepad->release(XBOX_BUTTON_A); //Aボタンを押していない状態に
     gamepad->release(XBOX_BUTTON_B);
     gamepad->release(XBOX_BUTTON_X);
-    gamepad->sendGamepadReport();
+    gamepad->sendGamepadReport(); //その初期状態をPCへ送る
 
     lastHidReportMs = millis();
     lastBatteryMs = millis();
@@ -545,15 +561,16 @@ void setup() {
 // ================================================================
 
 void loop() {
-    uint32_t now = millis();
+    uint32_t now = millis(); //起動後経過時間を保存
 
+    //毎ループ以下を順に処理
     serviceSerial();
     checkSleep();
     serviceBleCommand();
     servicePlaybackFinished();
     checkPlaybackTimeout();
 
-    bool connected = compositeHID.isConnected();
+    bool connected = compositeHID.isConnected(); //PCとのBLE接続状態．未接続ならLED_CON LOW，AMP_SD LOW，LED_VIB_EN LOWとして回路を休ませる
 
     if (!connected) {
         if (wasConnected) {
@@ -568,7 +585,7 @@ void loop() {
         return;
     }
 
-    if (!wasConnected) {
+    if (!wasConnected) { //接続直後にはBLE connectedを表示し，LED・AMPを有効化
         wasConnected = true;
         DBGLN("BLE connected");
         digitalWrite(LED_CON, HIGH);
