@@ -25,7 +25,7 @@
 // Device setting
 // ================================================================
 
-#define DEVICE_ID 0 //ブレスレットの識別番号
+#define DEVICE_ID 255 //ブレスレットの識別番号
 
 #define STRINGIFY(x) #x
 #define TOSTRING(x) STRINGIFY(x)
@@ -74,7 +74,7 @@ constexpr uint32_t SAMPLE_RATE_HZ = SFX_AUDIO_SAMPLE_RATE_HZ;
 constexpr uint32_t DAC_TIMER_US = 1000000UL / SAMPLE_RATE_HZ; //1秒1,000,000 µsなのでサンプリング周波数10 kHzなら1,000,000 / 10,000 = 100 µsごとに1サンプル送る
 constexpr uint32_t DAC_SPI_HZ = 8000000; //DACとのSPI通信速度を8 MHzにする
 constexpr uint16_t IDLE_DAC_CODE = SFX_AUDIO_CENTER_VALUE & 0x0FFF; //0x0FFFは16進数で4095．&はbit ANDなので下位12 bitだけ取り出す．DACが12 bitなので0～4095へ限定
-constexpr uint8_t DEFAULT_VOLUME = 50; //初期音量50%
+constexpr uint8_t DEFAULT_VOLUME = 100; //初期音量50% → 100%
 constexpr uint8_t VIB_MIN_THRESH = 3; //振幅3未満は実質0として扱う
 constexpr uint32_t PLAYBACK_TIMEOUT_MS = 10000; //異常時でも10秒経過したら再生を止める
 
@@ -299,10 +299,10 @@ void stopPlayback(bool powerDownAmp) {
         xSemaphoreGive(spiMutex);
     }
     digitalWrite(LED_VIB, LOW);
-    if (powerDownAmp) {
-        digitalWrite(AMP_SD, LOW);
-        digitalWrite(LED_VIB_EN, LOW);
-    }
+    
+    // PAM-CS対応: 再生停止時はフラグに関係なく常にアンプをOFFにして発熱・PWMノイズを防ぐ
+    digitalWrite(AMP_SD, LOW);
+    digitalWrite(LED_VIB_EN, LOW);
 }
 
 bool startPlayback(int waveformId, uint8_t amplitude) { //指定した波形を指定振幅で開始．戻り値は成功/失敗
@@ -327,7 +327,8 @@ bool startPlayback(int waveformId, uint8_t amplitude) { //指定した波形を�
     playbackFinished = false;
     playbackStartedMs = millis(); //再生開始時刻を保存
 
-    digitalWrite(AMP_SD, HIGH); //アンプを有効化
+    // PAM-CS対応: 再生開始時のみアンプの電源をONにする
+    digitalWrite(AMP_SD, HIGH); 
     digitalWrite(LED_VIB_EN, HIGH);
     digitalWrite(LED_VIB, HIGH);
     playing = true; //DAC Taskが波形を出力できる状態になる
@@ -340,6 +341,11 @@ void servicePlaybackFinished() {
     if (!playbackFinished) return;
     playbackFinished = false;
     digitalWrite(LED_VIB, LOW);
+    
+    // PAM-CS対応: 再生完了と同時にアンプを自動OFFにして発熱を防ぐ
+    digitalWrite(AMP_SD, LOW);
+    digitalWrite(LED_VIB_EN, LOW);
+    
     DBG("Finished waveform %d\n", currentWaveformId);
     playData = nullptr;
     playSize = 0;
@@ -528,8 +534,9 @@ void setup() {
         printClipList();
     }
 
-    //DAC Task作成．引数は，dacTask：実行関数，"dac"：Task名，4096：Stackサイズ，configMAX_PRIORITIES - 1：非常に高い優先度，&dacTaskHandle：作成したTaskのHandle保存先，1：Core 1
-    xTaskCreatePinnedToCore(dacTask, "dac", 4096, nullptr, configMAX_PRIORITIES - 1, &dacTaskHandle, 1);
+    // コアの分離：オーディオ処理(Core 0)とゲームコントローラー/通信系(Core 1)を分離するため、第6引数を 1 から 0 に変更
+    xTaskCreatePinnedToCore(dacTask, "dac", 4096, nullptr, configMAX_PRIORITIES - 1, &dacTaskHandle, 0);
+    
     esp_timer_create_args_t args = {}; //Timer設定用構造体．{}でゼロ初期化
     args.callback = dacTimerCallback; //Timer発火時に呼ぶ関数
     args.dispatch_method = ESP_TIMER_TASK; //Timer callbackをESP Timer Task上で実行
@@ -585,12 +592,11 @@ void loop() {
         return;
     }
 
-    if (!wasConnected) { //接続直後にはBLE connectedを表示し，LED・AMPを有効化
+    if (!wasConnected) { //接続直後にはBLE connectedを表示
         wasConnected = true;
         DBGLN("BLE connected");
         digitalWrite(LED_CON, HIGH);
-        digitalWrite(AMP_SD, HIGH);
-        digitalWrite(LED_VIB_EN, HIGH);
+        // PAM-CS対応: ここでのAMP_SD常時ONを廃止（発熱・ノイズ対策）
     }
 
     // --- 追加する心拍信号 ---
