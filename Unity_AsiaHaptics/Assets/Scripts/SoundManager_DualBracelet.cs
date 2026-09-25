@@ -30,12 +30,17 @@ public class SoundManager_DualBracelet : MonoBehaviour
     [Header("UI: Text")] public Text statusText;
     public GameObject[] oldActiveImages;
 
-    [Header("Selected Frame Appearance")]
-    public Canvas canvas; //CanvasはUnity UI全体を配置するための親オブジェクト．選択中のボタンを囲む青い枠をこのCanvasの子として生成
-    public Color frameColor = new Color(0.0f, 0.65f, 1.0f, 1.0f);
-    [Range(0.05f, 1.0f)] public float frameAlpha = 0.5f;
-    public float frameLineWidth = 3.0f;
-    public float framePadding = 8.0f;
+    // ======= 変更箇所：動的生成用の変数を削除し、Active切り替え用の配列を追加 =======
+    [Header("UI: Active Images (Selection Highlights)")]
+    [Tooltip("Processの選択時に表示するハイライト枠 (3個)")]
+    public GameObject[] processActiveImages = new GameObject[3];
+    [Tooltip("SEの選択時に表示するハイライト枠 (4個)")]
+    public GameObject[] seActiveImages = new GameObject[4];
+    [Tooltip("Audioの選択時に表示するハイライト枠 (2個)")]
+    public GameObject[] audioActiveImages = new GameObject[2];
+    [Tooltip("Positionの選択時に表示するハイライト枠 (7個)")]
+    public GameObject[] positionActiveImages = new GameObject[7];
+    // =================================================================================
 
     [Header("Bracelet Gamepad Assignment")] //左右のデバイスが Gamepad.all のリストの何番目にあるかを指定
     public int leftGamepadIndex = 0;
@@ -48,7 +53,6 @@ public class SoundManager_DualBracelet : MonoBehaviour
     private readonly SelectionData selection = new SelectionData();
     private Gamepad leftGamepad;
     private Gamepad rightGamepad;
-    private readonly RectTransform[] selectedFrames = new RectTransform[4];
     private DemoState state = DemoState.Selecting; //開始時は条件選択状態
 
     private float stimulusEndsAt; //刺激終了予定時刻を保存
@@ -60,10 +64,8 @@ public class SoundManager_DualBracelet : MonoBehaviour
         if (!audioSource) audioSource = GetComponent<AudioSource>();
         audioSource.spatialBlend = 0f; //3D音響ではなく完全な2D音響にする．0 = 2D，1 = 3D
         audioSource.playOnAwake = false; //シーン開始時に勝手に音を再生しない設定
-        if (!canvas) canvas = GetComponentInParent<Canvas>(); //CanvasがInspectorで指定されていなければ，親オブジェクトを遡ってCanvasを探す
         if (oldActiveImages != null) foreach (GameObject obj in oldActiveImages) if (obj) obj.SetActive(false);
 
-        CreateFramesIfNeeded(); //青い選択枠を生成
         WireUI(); //ボタンを押したときの処理を登録
         RefreshGamepads(); //接続中Gamepadを取得
         SendZeroHaptics(); //起動時に念のため振動を0にする
@@ -113,7 +115,7 @@ public class SoundManager_DualBracelet : MonoBehaviour
         UpdateAllUI();
     }
 
-    private Gamepad GetGamepadByIndex(int index){return (index < 0 || index >= Gamepad.all.Count) ? null : Gamepad.all[index]; } //indexが範囲外→ null，範囲内→ Gamepad.all[index]
+    private Gamepad GetGamepadByIndex(int index) { return (index < 0 || index >= Gamepad.all.Count) ? null : Gamepad.all[index]; } //indexが範囲外→ null，範囲内→ Gamepad.all[index]
 
     public void OnClickRender()
     {
@@ -124,9 +126,9 @@ public class SoundManager_DualBracelet : MonoBehaviour
     private IEnumerator ExecuteStimulusRoutine() //IEnumeratorを返すため、Coroutineとして動かせる
     {
         state = DemoState.Playing;
-        InputSystem.ResumeHaptics(); //Input System側で一時停止されている可能性のあるhaptics（振動出力）を再開
+        InputSystem.ResumeHaptics(); //Input System側で一時停止されている可能性のあるhaptics（振動出力）を再開．これから振動命令を出すので，GamepadへのHaptics出力を有効な状態に戻しておく
 
-        yield return null; //UIイベント（マウス操作）の影響を断ち切るために1フレーム待つ
+        yield return null; //UIイベント（マウス操作）の影響を断ち切るために1フレーム待つ．マウスのUIクリック処理とGamepadへの振動出力を同じフレームで行わず切り離した
 
         //現在の選択値をローカル変数へコピー
         int seIndex = selection.se;
@@ -148,7 +150,7 @@ public class SoundManager_DualBracelet : MonoBehaviour
         int waveformId = ((int)process * 4) + seIndex;
 
         /*
-         * waveform IDをBLE送信用コマンドへ変換
+         * waveform IDをBLE送信用コマンドへ変換．0を特殊な値（次の命令を受け付けられる状態へ戻すための信号）として空け，また通信値同士に余裕を持たせるため
          * ID 0 → 5
          * ID 1 → 10
          *・・・
@@ -172,6 +174,7 @@ public class SoundManager_DualBracelet : MonoBehaviour
 
         Debug.Log($"[Haptics] Play -> ID:{waveformId}, L_Amp:{leftAmplitude:F2}, R_Amp:{rightAmplitude:F2}, Cmd:{waveformCommand:F2}"); //Unity Consoleへ送信内容を表示．$"..."は文字列補間．:F2は小数点以下2桁表示
 
+        //SetMotorSpeeds()は本来ゲームパッド内部の2つの振動モーターの強さを設定するための関数だが，本システムではGamepad振動機能を通信チャンネルとして利用
         if (leftGamepad != null) leftGamepad.SetMotorSpeeds(leftAmplitude, waveformCommand); //左ブレスレットへGamepad rumble命令を送る．第1引数 = 振幅，第2引数 = 波形コマンド
         if (rightGamepad != null) rightGamepad.SetMotorSpeeds(rightAmplitude, waveformCommand);
 
@@ -226,80 +229,29 @@ public class SoundManager_DualBracelet : MonoBehaviour
 
     private void UpdateAllUI()
     {
-        UpdateSelectedFrames(); //選択枠を更新
+        UpdateHighlights(); //各項目のハイライト枠を更新
         UpdateStatusText(); //文字情報を更新
         if (renderButton) renderButton.interactable = (state == DemoState.Selecting); //選択状態のときだけRenderをクリックできる
     }
 
-    private void CreateFramesIfNeeded()
+    // ======= 変更箇所：オブジェクトのアクティブ/非アクティブでハイライトを表示する処理 =======
+    private void UpdateHighlights()
     {
-        if (!canvas) return;
-        Color c = frameColor;
-        c.a = Mathf.Clamp01(c.a * frameAlpha);
-        for (int i = 0; i < 4; i++) if (!selectedFrames[i]) selectedFrames[i] = CreateFrame($"Selected_{((SelectRow)i)}", c, frameLineWidth);
+        UpdateHighlightArray(processActiveImages, (int)selection.process);
+        UpdateHighlightArray(seActiveImages, selection.se);
+        UpdateHighlightArray(audioActiveImages, selection.audio);
+        UpdateHighlightArray(positionActiveImages, selection.position);
     }
 
-    private RectTransform CreateFrame(string objectName, Color color, float lineWidth)
+    private void UpdateHighlightArray(GameObject[] images, int activeIdx)
     {
-        GameObject root = new GameObject(objectName, typeof(RectTransform));
-        root.transform.SetParent(canvas.transform, false);
-        RectTransform rootRect = root.GetComponent<RectTransform>();
-        rootRect.anchorMin = new Vector2(0.5f, 0.5f); rootRect.anchorMax = new Vector2(0.5f, 0.5f); rootRect.pivot = new Vector2(0.5f, 0.5f);
-        CreateFrameLine(rootRect, "Top", color, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, lineWidth));
-        CreateFrameLine(rootRect, "Bottom", color, new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(0f, lineWidth));
-        CreateFrameLine(rootRect, "Left", color, new Vector2(0f, 0f), new Vector2(0f, 1f), new Vector2(lineWidth, 0f));
-        CreateFrameLine(rootRect, "Right", color, new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(lineWidth, 0f));
-        root.transform.SetAsLastSibling();
-        return rootRect;
-    }
-
-    private void CreateFrameLine(RectTransform parent, string lineName, Color color, Vector2 anchorMin, Vector2 anchorMax, Vector2 sizeDelta)
-    {
-        GameObject line = new GameObject(lineName, typeof(RectTransform), typeof(Image));
-        line.transform.SetParent(parent, false);
-        RectTransform rt = line.GetComponent<RectTransform>();
-        rt.anchorMin = anchorMin; rt.anchorMax = anchorMax; rt.pivot = new Vector2(0.5f, 0.5f); rt.anchoredPosition = Vector2.zero; rt.sizeDelta = sizeDelta;
-        line.GetComponent<Image>().color = color; line.GetComponent<Image>().raycastTarget = false;
-    }
-
-    private void UpdateSelectedFrames()
-    {
-        for (int i = 0; i < 4; i++)
+        if (images == null) return;
+        for (int i = 0; i < images.Length; i++)
         {
-            if (i >= selectedFrames.Length || !selectedFrames[i]) continue; //配列範囲外，またはその場所に選択枠が存在しないなら，その枠については何もしないで次へ進む
-            RectTransform target = GetSelectedTarget((SelectRow)i); //現在選ばれているButtonのRectTransformを取得
-            PositionFrameOnTarget(selectedFrames[i], target, framePadding);
+            if (images[i]) images[i].SetActive(i == activeIdx);
         }
     }
-
-    private RectTransform GetSelectedTarget(SelectRow row)
-    {
-        switch (row)
-        {
-            case SelectRow.Process: return GetButtonRect(processButtons, (int)selection.process);
-            case SelectRow.SE: return GetButtonRect(seButtons, selection.se);
-            case SelectRow.Audio: return GetButtonRect(audioButtons, selection.audio);
-            case SelectRow.Position: return GetButtonRect(positionButtons, selection.position);
-            default: return null;
-        }
-    }
-
-    private RectTransform GetButtonRect(Button[] buttons, int index) { return (buttons == null || index < 0 || index >= buttons.Length || buttons[index] == null) ? null : buttons[index].GetComponent<RectTransform>(); }
-
-    private void PositionFrameOnTarget(RectTransform frame, RectTransform target, float padding)
-    {
-        if (!frame || !canvas) return;
-        if (!target) { frame.gameObject.SetActive(false); return; }
-        frame.gameObject.SetActive(true);
-        RectTransform canvasRect = canvas.transform as RectTransform;
-        if (!canvasRect) return;
-        frame.position = target.position; frame.rotation = target.rotation;
-        float scaleX = Mathf.Abs(target.lossyScale.x / canvasRect.lossyScale.x);
-        float scaleY = Mathf.Abs(target.lossyScale.y / canvasRect.lossyScale.y);
-        frame.SetSizeWithCurrentAnchors(RectTransform.Axis.Horizontal, target.rect.width * scaleX + padding);
-        frame.SetSizeWithCurrentAnchors(RectTransform.Axis.Vertical, target.rect.height * scaleY + padding);
-        frame.SetAsLastSibling();
-    }
+    // =========================================================================================
 
     private void UpdateStatusText()
     {

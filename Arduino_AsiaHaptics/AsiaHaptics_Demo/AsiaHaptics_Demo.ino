@@ -318,7 +318,7 @@ bool startPlayback(int waveformId, uint8_t amplitude) { //指定した波形を�
     }
 
     playing = false;
-    playData = clips[waveformId].data; //対象波形のPSRAMアドレスを設定
+    playData = clips[waveformId].data; //対象波形のPSRAMアドレスを設定．ESP32起動時にFFatに保存されている.binファイルをPSRAMへ読み込んである
     //再生情報を初期化
     playSize = clips[waveformId].sizeBytes;
     playPos = 0;
@@ -331,7 +331,7 @@ bool startPlayback(int waveformId, uint8_t amplitude) { //指定した波形を�
     digitalWrite(AMP_SD, HIGH); 
     digitalWrite(LED_VIB_EN, HIGH);
     digitalWrite(LED_VIB, HIGH);
-    playing = true; //DAC Taskが波形を出力できる状態になる
+    playing = true; //DAC Taskが波形を読み始め，出力できる状態になる
 
     DBG("PLAY id=%d amp=%u\n", waveformId, amplitude);
     return true;
@@ -373,7 +373,7 @@ int decodeWaveformCommand(uint8_t value) { //Unityの5,10,15,...60を0,1,2,...11
 }
 
 //XboxGamepadOutputReportDataはライブラリが定義している構造体で，weakMotorMagnitude，strongMotorMagnitudeなどが入っている
-void onVibrate(XboxGamepadOutputReportData data) { //PCからXbox rumble output reportを受信したとき呼ばれる
+void onVibrate(XboxGamepadOutputReportData data) { //PCからXbox rumble output reportを受信したとき自動的に呼ばれるコールバック関数
 #if UNITY_AMPLITUDE_IS_STRONG_MOTOR
     uint8_t amplitude = data.strongMotorMagnitude;
     uint8_t command = data.weakMotorMagnitude;
@@ -396,14 +396,15 @@ void onVibrate(XboxGamepadOutputReportData data) { //PCからXbox rumble output 
     bleCommandArmed = false; //一度受理したらロック
     portENTER_CRITICAL(&bleMux); //ここから他処理に割り込まれず，安全に共有データを書き込み
     //BLE callbackでは直接再生せず，再生命令が来ていますというデータだけ保存
+    //BLE受信処理は短時間で終わらせ，実際の重い再生処理は通常のloop側で行う方が安全だから
     pendingCommand.waveformId = id;
     pendingCommand.amplitude = amplitude;
     bleCommandPending = true;
     portEXIT_CRITICAL(&bleMux); //Critical Section終了
 }
 
-void serviceBleCommand() { //Arduinoのloop()側でpending commandを確認
-    if (!bleCommandPending) return;
+void serviceBleCommand() { //Arduinoのloop()側でpending commandを確認（onVibrate()の中でそのままstartPlayback()を呼ぶのではない）
+    if (!bleCommandPending) return; //保留中のBLE命令がなければ何もしない
     BleCommand cmd; //ローカルコピー用変数
     portENTER_CRITICAL(&bleMux);
     cmd = pendingCommand; //共有領域から安全に取り出し
@@ -537,6 +538,7 @@ void setup() {
     // コアの分離：オーディオ処理(Core 0)とゲームコントローラー/通信系(Core 1)を分離するため、第6引数を 1 から 0 に変更
     xTaskCreatePinnedToCore(dacTask, "dac", 4096, nullptr, configMAX_PRIORITIES - 1, &dacTaskHandle, 0);
     
+    //Timerは，一定時間ごとに自動的にイベントを発生させる機能．今回なら100 μsおきにdacTimerCallback()が呼ばれる
     esp_timer_create_args_t args = {}; //Timer設定用構造体．{}でゼロ初期化
     args.callback = dacTimerCallback; //Timer発火時に呼ぶ関数
     args.dispatch_method = ESP_TIMER_TASK; //Timer callbackをESP Timer Task上で実行

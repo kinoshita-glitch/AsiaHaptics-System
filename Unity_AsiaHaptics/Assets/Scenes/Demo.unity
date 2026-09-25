@@ -4047,11 +4047,26 @@ MonoBehaviour:
   renderButton: {fileID: 933866398}
   statusText: {fileID: 516527124}
   oldActiveImages: []
-  canvas: {fileID: 744276002}
-  frameColor: {r: 0, g: 0.65, b: 1, a: 1}
-  frameAlpha: 0.5
-  frameLineWidth: 3
-  framePadding: 8
+  processActiveImages:
+  - {fileID: 1422968371}
+  - {fileID: 1607897738}
+  - {fileID: 1332063443}
+  seActiveImages:
+  - {fileID: 286744794}
+  - {fileID: 2069077272}
+  - {fileID: 83615331}
+  - {fileID: 2091919313}
+  audioActiveImages:
+  - {fileID: 1452713677}
+  - {fileID: 450897385}
+  positionActiveImages:
+  - {fileID: 114513356}
+  - {fileID: 96513086}
+  - {fileID: 2106835594}
+  - {fileID: 216031071}
+  - {fileID: 1209626915}
+  - {fileID: 830024268}
+  - {fileID: 1882207815}
   leftGamepadIndex: 0
   rightGamepadIndex: 1
   commandHoldSeconds: 0.06
