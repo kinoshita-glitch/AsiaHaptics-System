@@ -25,7 +25,7 @@
 // Device setting
 // ================================================================
 
-#define DEVICE_ID 255 //ブレスレットの識別番号
+#define DEVICE_ID 0 //ブレスレットの識別番号
 
 #define STRINGIFY(x) #x
 #define TOSTRING(x) STRINGIFY(x)
@@ -184,7 +184,7 @@ uint16_t applyAmplitude(uint16_t sample, uint8_t amplitude) { //振幅調整
     //例えばsampleが3000なら3000 - 2048 = +952，sampleが1000なら1000 - 2048 = -1048．つまり2048を0とみなした交流波形へ変換
     int32_t centered = static_cast<int32_t>(sample) - static_cast<int32_t>(IDLE_DAC_CODE);
     //掛け算時のオーバーフローを避けるため大きな型．振幅を，BLE amplitude 0～255 × masterVolume 0～100% でスケーリング
-    int64_t scaled = static_cast<int64_t>(centered) * amplitude * masterVolume / (255LL * 100LL);
+    int64_t scaled = static_cast<int64_t>(centered) * amplitude * masterVolume / (100LL * 100LL); //受け取るMotor Magnitudeの最大値は100なので，最大amplitudeは100．255LL → 100LLに変更
     int32_t result = static_cast<int32_t>(IDLE_DAC_CODE) + static_cast<int32_t>(scaled);
     return static_cast<uint16_t>(constrain(result, 0, 4095)); //DAC範囲へ制限
 }

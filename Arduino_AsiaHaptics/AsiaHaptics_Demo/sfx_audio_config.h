@@ -19,14 +19,16 @@ static const SfxAudioClip SFX_AUDIO_CLIPS[SFX_AUDIO_CLIP_COUNT] = {
     {"/sfx/normalized_1up2_u12le_10k.bin", 13000, 1300, 26000},
     {"/sfx/normalized_fireball_triple_u12le_10k.bin", 14027, 1403, 28054},
     {"/sfx/normalized_stepon_triple_u12le_10k.bin", 14720, 1472, 29440},
-    {"/sfx/kuppafire_ism_150_u12le_10k.bin", 13000, 1300, 26000},
-    {"/sfx/1up2_ism_150_u12le_10k.bin", 13000, 1300, 26000},
-    {"/sfx/fireball_triple_ism_150_u12le_10k.bin", 14027, 1403, 28054},
-    {"/sfx/stepon_triple_ism_150_u12le_10k.bin", 14720, 1472, 29440},
-    {"/sfx/kuppafire_ism_250_u12le_10k.bin", 13000, 1300, 26000},
-    {"/sfx/1up2_ism_250_u12le_10k.bin", 13000, 1300, 26000},
-    {"/sfx/fireball_triple_ism_250_u12le_10k.bin", 14027, 1403, 28054},
-    {"/sfx/stepon_triple_ism_250_u12le_10k.bin", 14720, 1472, 29440},
+    
+    {"/sfx/kuppafire_ism_170_u12le_10k.bin", 13000, 1300, 26000},
+    {"/sfx/1up2_ism_170_u12le_10k.bin", 13000, 1300, 26000},
+    {"/sfx/fireball_triple_ism_170_u12le_10k.bin", 14027, 1403, 28054},
+    {"/sfx/stepon_triple_ism_170_u12le_10k.bin", 14720, 1472, 29440},
+    
+    {"/sfx/kuppafire_bpf_170Hz_u12le_10k.bin", 13000, 1300, 26000},
+    {"/sfx/1up2_bpf_170Hz_u12le_10k.bin", 13000, 1300, 26000},
+    {"/sfx/fireball_triple_bpf_170Hz_u12le_10k.bin", 14027, 1403, 28054},
+    {"/sfx/stepon_triple_bpf_170Hz_u12le_10k.bin", 14720, 1472, 29440},
 };
 
 /*
