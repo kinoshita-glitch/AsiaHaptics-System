@@ -202,12 +202,18 @@ void dacTask(void*) { //10 kHz波形生成専用DAC Task
         uint16_t output = IDLE_DAC_CODE; //デフォルト出力は中心値2048
         bool consumed = false; //今回のサンプルを正常消費したか記録
 
-        if (playing && playData != nullptr && playAmplitude >= VIB_MIN_THRESH && playPos + 1 < playSize) { //再生中，データあり，振幅あり，まだ2 byte以上データあり，であるかを確認
+        if (playing && playData != nullptr && playPos + 1 < playSize) { //再生中，データあり，まだ2 byte以上データあり，であるかを確認
             size_t pos = playPos;
             //.binファイルは1 sampleを2 byteで保存．Little Endianなので，1 byte目 = 下位8 bit，2 byte目 = 上位8 bitとして復元
-            uint16_t raw = static_cast<uint16_t>(playData[pos]) | (static_cast<uint16_t>(playData[pos + 1]) << 8); 
+            uint16_t raw = static_cast<uint16_t>(playData[pos]) | (static_cast<uint16_t>(playData[pos + 1]) << 8);
             uint16_t sample = raw & 0x0FFF; //下位12 bitだけ取り出す
-            output = applyAmplitude(sample, playAmplitude); //振幅調整
+
+            if (playAmplitude >= VIB_MIN_THRESH) {
+                output = applyAmplitude(sample, playAmplitude); //振幅調整
+            } else {
+                output = IDLE_DAC_CODE;
+            }
+
             consumed = true;
         }
 
@@ -222,7 +228,7 @@ void dacTask(void*) { //10 kHz波形生成専用DAC Task
             }
         }
 
-        if (playing && (playData == nullptr || playAmplitude < VIB_MIN_THRESH || playPos + 1 >= playSize)) {
+        if (playing && (playData == nullptr || playPos + 1 >= playSize)) {
             playing = false;
             playbackFinished = true;
         }
@@ -312,11 +318,6 @@ bool startPlayback(int waveformId, uint8_t amplitude) { //指定した波形を�
         return false;
     }
 
-    if (amplitude < VIB_MIN_THRESH) {
-        stopPlayback(false);
-        return true;
-    }
-
     playing = false;
     playData = clips[waveformId].data; //対象波形のPSRAMアドレスを設定．ESP32起動時にFFatに保存されている.binファイルをPSRAMへ読み込んである
     //再生情報を初期化
@@ -327,10 +328,17 @@ bool startPlayback(int waveformId, uint8_t amplitude) { //指定した波形を�
     playbackFinished = false;
     playbackStartedMs = millis(); //再生開始時刻を保存
 
-    // PAM-CS対応: 再生開始時のみアンプの電源をONにする
-    digitalWrite(AMP_SD, HIGH); 
-    digitalWrite(LED_VIB_EN, HIGH);
-    digitalWrite(LED_VIB, HIGH);
+    if (amplitude >= VIB_MIN_THRESH) {
+        // PAM-CS対応: 再生開始時のみアンプの電源をONにする
+        digitalWrite(AMP_SD, HIGH);
+        digitalWrite(LED_VIB_EN, HIGH);
+        digitalWrite(LED_VIB, HIGH);
+    } else {
+        digitalWrite(AMP_SD, LOW);
+        digitalWrite(LED_VIB_EN, LOW);
+        digitalWrite(LED_VIB, LOW);
+    }
+
     playing = true; //DAC Taskが波形を読み始め，出力できる状態になる
 
     DBG("PLAY id=%d amp=%u\n", waveformId, amplitude);
@@ -410,6 +418,29 @@ void serviceBleCommand() { //Arduinoのloop()側でpending commandを確認（on
     cmd = pendingCommand; //共有領域から安全に取り出し
     bleCommandPending = false;
     portEXIT_CRITICAL(&bleMux);
+
+    //現在再生中の波形と同じ波形なら，再生位置をリセットせず振幅だけ変更
+    if (playing && currentWaveformId == cmd.waveformId) {
+        playAmplitude = cmd.amplitude;
+
+        if (cmd.amplitude >= VIB_MIN_THRESH) {
+            digitalWrite(AMP_SD, HIGH);
+            digitalWrite(LED_VIB_EN, HIGH);
+            digitalWrite(LED_VIB, HIGH);
+        } else {
+            digitalWrite(AMP_SD, LOW);
+            digitalWrite(LED_VIB_EN, LOW);
+            digitalWrite(LED_VIB, LOW);
+        }
+
+        DBG("UPDATE id=%d amp=%u pos=%u\n",
+            cmd.waveformId,
+            cmd.amplitude,
+            static_cast<unsigned>(playPos));
+
+        return;
+    }
+
     startPlayback(cmd.waveformId, cmd.amplitude); //実際の再生を開始
 }
 

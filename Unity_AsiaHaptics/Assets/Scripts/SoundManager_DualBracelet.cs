@@ -15,7 +15,7 @@ public class SoundManager_DualBracelet : MonoBehaviour
         public ProcessType process = ProcessType.RAW; //現在の信号処理．初期値はRAW
         public int se = 0;
         public int audio = 0; //音声提示のON/OFF．0 = ON，1 = OFF
-        public int position = 0;
+        public int position = -1; //開始時はPositionだけ未選択
     }
 
     [Header("Headphone Audio")]
@@ -26,7 +26,6 @@ public class SoundManager_DualBracelet : MonoBehaviour
     [Header("UI: SE (A / B / C / D)")] public Button[] seButtons = new Button[4];
     [Header("UI: Audio (ON / OFF)")] public Button[] audioButtons = new Button[2];
     [Header("UI: Position (1..7)")] public Button[] positionButtons = new Button[7];
-    [Header("UI: Render")] public Button renderButton;
     [Header("UI: Text")] public Text statusText;
     public GameObject[] oldActiveImages;
 
@@ -57,6 +56,10 @@ public class SoundManager_DualBracelet : MonoBehaviour
 
     private float stimulusEndsAt; //刺激終了予定時刻を保存
     private Coroutine zeroCommandCoroutine;
+    private Coroutine positionUpdateCoroutine;
+
+    private int playingWaveformId = -1;
+    private float playingWaveformCommand = 0f;
 
     private void Awake() //UnityがGameObjectを初期化するとき，最初期に1回呼ばれる
     {
@@ -98,8 +101,29 @@ public class SoundManager_DualBracelet : MonoBehaviour
         }
         for (int i = 0; i < seButtons.Length; i++) { int idx = i; if (seButtons[i]) seButtons[i].onClick.AddListener(() => { selection.se = idx; UpdateAllUI(); }); }
         for (int i = 0; i < audioButtons.Length; i++) { int idx = i; if (audioButtons[i]) audioButtons[i].onClick.AddListener(() => { selection.audio = idx; UpdateAllUI(); }); }
-        for (int i = 0; i < positionButtons.Length; i++) { int idx = i; if (positionButtons[i]) positionButtons[i].onClick.AddListener(() => { selection.position = idx; UpdateAllUI(); }); }
-        if (renderButton) renderButton.onClick.AddListener(OnClickRender); //Renderボタンを押すと，OnClickRender()が呼ばれる
+
+        for (int i = 0; i < positionButtons.Length; i++)
+        {
+            int idx = i;
+            if (positionButtons[i])
+                positionButtons[i].onClick.AddListener(() =>
+                {
+                    selection.position = idx;
+                    UpdateAllUI();
+
+                    if (state == DemoState.Selecting)
+                    {
+                        StartCoroutine(ExecuteStimulusRoutine());
+                    }
+                    else
+                    {
+                        if (positionUpdateCoroutine != null)
+                            StopCoroutine(positionUpdateCoroutine);
+
+                        positionUpdateCoroutine = StartCoroutine(UpdatePositionWhilePlayingRoutine());
+                    }
+                });
+        }
     }
 
     private void OnDeviceChange(InputDevice device, InputDeviceChange change) //InputDeviceはキーボード・マウス・Gamepadなど全入力機器の基底クラス
@@ -117,15 +141,10 @@ public class SoundManager_DualBracelet : MonoBehaviour
 
     private Gamepad GetGamepadByIndex(int index) { return (index < 0 || index >= Gamepad.all.Count) ? null : Gamepad.all[index]; } //indexが範囲外→ null，範囲内→ Gamepad.all[index]
 
-    public void OnClickRender()
-    {
-        if (state == DemoState.Playing) return; //すでに刺激再生中なら重複実行しない
-        StartCoroutine(ExecuteStimulusRoutine()); //IEnumeratorを返す関数ExecuteStimulusRoutine()をStartCoroutine()に渡すことで，Coroutineとして実行
-    }
-
     private IEnumerator ExecuteStimulusRoutine() //IEnumeratorを返すため、Coroutineとして動かせる
     {
         state = DemoState.Playing;
+        stimulusEndsAt = float.PositiveInfinity; //実際の刺激終了時刻を設定するまで，Update()による誤終了を防ぐ
         InputSystem.ResumeHaptics(); //Input System側で一時停止されている可能性のあるhaptics（振動出力）を再開．これから振動命令を出すので，GamepadへのHaptics出力を有効な状態に戻しておく
 
         yield return null; //UIイベント（マウス操作）の影響を断ち切るために1フレーム待つ．マウスのUIクリック処理とGamepadへの振動出力を同じフレームで行わず切り離した
@@ -168,6 +187,9 @@ public class SoundManager_DualBracelet : MonoBehaviour
          */
         float waveformCommand = waveformCommandValue / 100.0f;
 
+        playingWaveformId = waveformId;
+        playingWaveformCommand = waveformCommand;
+
         float x = Mathf.Clamp01(positionIndex / 6.0f); //Positionから振幅へ変換．MathfはUnityの数学関数群．Clamp01()は値を0～1に制限
         float leftAmplitude = 1.0f - x;
         float rightAmplitude = x;
@@ -198,6 +220,40 @@ public class SoundManager_DualBracelet : MonoBehaviour
         UpdateAllUI();
     }
 
+    private IEnumerator UpdatePositionWhilePlayingRoutine()
+    {
+        if (zeroCommandCoroutine != null)
+        {
+            StopCoroutine(zeroCommandCoroutine);
+            zeroCommandCoroutine = null;
+        }
+
+        //マイコン側を次の命令を受け付けられる状態へ戻す
+        SendZeroHaptics();
+
+        //0,0と新しい振幅命令を別フレームに分ける
+        yield return null;
+
+        if (state != DemoState.Playing)
+        {
+            positionUpdateCoroutine = null;
+            yield break;
+        }
+
+        float x = Mathf.Clamp01(selection.position / 6.0f);
+        float leftAmplitude = 1.0f - x;
+        float rightAmplitude = x;
+
+        Debug.Log($"[Haptics] Update Position -> ID:{playingWaveformId}, L_Amp:{leftAmplitude:F2}, R_Amp:{rightAmplitude:F2}, Cmd:{playingWaveformCommand:F2}");
+
+        if (leftGamepad != null) leftGamepad.SetMotorSpeeds(leftAmplitude, playingWaveformCommand);
+        if (rightGamepad != null) rightGamepad.SetMotorSpeeds(rightAmplitude, playingWaveformCommand);
+
+        zeroCommandCoroutine = StartCoroutine(ReturnHapticsToZeroAfterDelay());
+
+        positionUpdateCoroutine = null;
+    }
+
     private IEnumerator ReturnHapticsToZeroAfterDelay()
     {
         //実時間で0.06秒待つ．WaitForSecondsRealtimeはTime.timeScaleの影響を受けない
@@ -208,17 +264,52 @@ public class SoundManager_DualBracelet : MonoBehaviour
 
     private void FinishTrial() //刺激時間終了時の処理
     {
+        if (positionUpdateCoroutine != null)
+        {
+            StopCoroutine(positionUpdateCoroutine);
+            positionUpdateCoroutine = null;
+        }
+
+        if (zeroCommandCoroutine != null)
+        {
+            StopCoroutine(zeroCommandCoroutine);
+            zeroCommandCoroutine = null;
+        }
+
         SendZeroHaptics(); //安全のためもう一度0を送る
         if (audioSource) audioSource.Stop(); //音声を止める
         state = DemoState.Selecting; //次の条件を選択できる状態へ戻す
+        selection.position = -1; //刺激終了後はPositionを未選択状態へ戻す
+        playingWaveformId = -1;
+        playingWaveformCommand = 0f;
         UpdateAllUI();
     }
 
     private float GetStimulusDurationSeconds(int waveformId, int seIndex)
     {
-        if (headphoneClipsRaw != null && seIndex >= 0 && seIndex < headphoneClipsRaw.Length && headphoneClipsRaw[seIndex] != null)
-            return Mathf.Max(0.1f, headphoneClipsRaw[seIndex].length); //AudioClipの長さを使用．Mathf.Max()によって最低0.1秒を保証
-        return Mathf.Max(0.1f, defaultStimulusDurationSeconds); //AudioClipがなければ，デフォルト1.5秒を使う
+        //マイコン側の.bin波形の再生時間に合わせる
+        switch (waveformId)
+        {
+            case 0:
+            case 1:
+            case 4:
+            case 5:
+            case 8:
+            case 9:
+                return 1.300f;
+
+            case 2:
+            case 6:
+            case 10:
+                return 1.403f;
+
+            case 3:
+            case 7:
+            case 11:
+                return 1.472f;
+        }
+
+        return Mathf.Max(0.1f, defaultStimulusDurationSeconds);
     }
 
     private void SendZeroHaptics()
@@ -231,7 +322,6 @@ public class SoundManager_DualBracelet : MonoBehaviour
     {
         UpdateHighlights(); //各項目のハイライト枠を更新
         UpdateStatusText(); //文字情報を更新
-        if (renderButton) renderButton.interactable = (state == DemoState.Selecting); //選択状態のときだけRenderをクリックできる
     }
 
     // ======= 変更箇所：オブジェクトのアクティブ/非アクティブでハイライトを表示する処理 =======
@@ -261,9 +351,11 @@ public class SoundManager_DualBracelet : MonoBehaviour
         string rConnected = rightGamepad != null ? "Connected" : "Not found";
         char seChar = (char)('A' + selection.se); //charは1文字を表す型．例えばselection.se = 0 → A，selection.se = 1 → Bとなる
         string audioName = selection.audio == 0 ? "ON" : "OFF";
+        string positionName = selection.position >= 0 ? $"Pos{selection.position + 1}" : "Pos-";
+
         //状態を画面表示
         statusText.text = $"State: {state}\n" +
-                          $"Selected: {selection.process}, {seChar}, {audioName}, Pos{selection.position + 1}\n" +
+                          $"Selected: {selection.process}, {seChar}, {audioName}, {positionName}\n" +
                           $"Left (Idx {leftGamepadIndex}): {lConnected}\n" +
                           $"Right (Idx {rightGamepadIndex}): {rConnected}";
     }
