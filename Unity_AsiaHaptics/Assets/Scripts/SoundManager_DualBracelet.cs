@@ -20,10 +20,10 @@ public class SoundManager_DualBracelet : MonoBehaviour
 
     [Header("Headphone Audio")]
     public AudioSource audioSource; //音声を再生するコンポーネント
-    public AudioClip[] headphoneClipsRaw = new AudioClip[4];
+    public AudioClip[] headphoneClipsRaw = new AudioClip[8];
 
     [Header("UI: Process (RAW / ISM / BPF)")] public Button[] processButtons = new Button[3];
-    [Header("UI: SE (A / B / C / D)")] public Button[] seButtons = new Button[4];
+    [Header("UI: SE (A / B / C / D / E / F / G / H)")] public Button[] seButtons = new Button[8];
     [Header("UI: Audio (ON / OFF)")] public Button[] audioButtons = new Button[2];
     [Header("UI: Position (1..7)")] public Button[] positionButtons = new Button[7];
     [Header("UI: Text")] public Text statusText;
@@ -33,8 +33,8 @@ public class SoundManager_DualBracelet : MonoBehaviour
     [Header("UI: Active Images (Selection Highlights)")]
     [Tooltip("Processの選択時に表示するハイライト枠 (3個)")]
     public GameObject[] processActiveImages = new GameObject[3];
-    [Tooltip("SEの選択時に表示するハイライト枠 (4個)")]
-    public GameObject[] seActiveImages = new GameObject[4];
+    [Tooltip("SEの選択時に表示するハイライト枠 (8個)")]
+    public GameObject[] seActiveImages = new GameObject[8];
     [Tooltip("Audioの選択時に表示するハイライト枠 (2個)")]
     public GameObject[] audioActiveImages = new GameObject[2];
     [Tooltip("Positionの選択時に表示するハイライト枠 (7個)")]
@@ -155,34 +155,38 @@ public class SoundManager_DualBracelet : MonoBehaviour
         ProcessType process = selection.process;
 
         /*
-         * 12通りの波形ID
-         * RAW A = 0×4+0 = 0
-         * RAW B = 0×4+1 = 1
-         * RAW C = 0×4+2 = 2
-         * RAW D = 0×4+3 = 3
+         * 24通りの波形ID
+         * RAW A = 0×8+0 = 0
+         * RAW B = 0×8+1 = 1
+         * RAW C = 0×8+2 = 2
+         * RAW D = 0×8+3 = 3
+         * RAW E = 0×8+4 = 4
+         * RAW F = 0×8+5 = 5
+         * RAW G = 0×8+6 = 6
+         * RAW H = 0×8+7 = 7
          *・・・
-         * ISM A = 1×4+0 = 4
-         * ISM D = 1×4+3 = 7
-         * BPF A = 2×4+0 = 8
-         * BPF D = 2×4+3 = 11
+         * ISM A = 1×8+0 = 8
+         * ISM H = 1×8+7 = 15
+         * BPF A = 2×8+0 = 16
+         * BPF H = 2×8+7 = 23
          */
-        int waveformId = ((int)process * 4) + seIndex;
+        int waveformId = ((int)process * 8) + seIndex;
 
         /*
          * waveform IDをBLE送信用コマンドへ変換．0を特殊な値（次の命令を受け付けられる状態へ戻すための信号）として空け，また通信値同士に余裕を持たせるため
-         * ID 0 → 5
-         * ID 1 → 10
+         * ID 0 → 4
+         * ID 1 → 8
          *・・・
-         * ID 11 → 60
+         * ID 23 → 96
          */
-        int waveformCommandValue = 5 * (waveformId + 1);
+        int waveformCommandValue = 4 * (waveformId + 1);
 
         /*
          * SetMotorSpeeds()は0～1なので、
-         * 5  → 0.05
-         * 10 → 0.10
+         * 4  → 0.04
+         * 8  → 0.08
          *・・・
-         * 60 → 0.60
+         * 96 → 0.96
          * へ変換
          */
         float waveformCommand = waveformCommandValue / 100.0f;
@@ -292,21 +296,41 @@ public class SoundManager_DualBracelet : MonoBehaviour
         {
             case 0:
             case 1:
-            case 4:
-            case 5:
             case 8:
             case 9:
+            case 16:
+            case 17:
                 return 1.300f;
 
             case 2:
-            case 6:
             case 10:
+            case 18:
                 return 1.403f;
 
             case 3:
-            case 7:
             case 11:
+            case 19:
                 return 1.472f;
+
+            case 4:
+            case 12:
+            case 20:
+                return 30.000f;
+
+            case 5:
+            case 13:
+            case 21:
+                return 30.000f;
+
+            case 6:
+            case 14:
+            case 22:
+                return 30.000f;
+
+            case 7:
+            case 15:
+            case 23:
+                return 5.000f;
         }
 
         return Mathf.Max(0.1f, defaultStimulusDurationSeconds);

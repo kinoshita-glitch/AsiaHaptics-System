@@ -76,13 +76,13 @@ constexpr uint32_t DAC_SPI_HZ = 8000000; //DACとのSPI通信速度を8 MHzに�
 constexpr uint16_t IDLE_DAC_CODE = SFX_AUDIO_CENTER_VALUE & 0x0FFF; //0x0FFFは16進数で4095．&はbit ANDなので下位12 bitだけ取り出す．DACが12 bitなので0～4095へ限定
 constexpr uint8_t DEFAULT_VOLUME = 100; //初期音量50% → 100%
 constexpr uint8_t VIB_MIN_THRESH = 3; //振幅3未満は実質0として扱う
-constexpr uint32_t PLAYBACK_TIMEOUT_MS = 10000; //異常時でも10秒経過したら再生を止める
+constexpr uint32_t PLAYBACK_TIMEOUT_MS = 120000; //異常時でも120秒経過したら再生を止める
 
-constexpr int WAVEFORM_COUNT = 12; //波形は12種類
+constexpr int WAVEFORM_COUNT = 24; //波形は24種類
 
-static_assert( //sfx_audio_config.hに12個未満しか登録されていなければコンパイルエラーにする
+static_assert( //sfx_audio_config.hに24個未満しか登録されていなければコンパイルエラーにする
     SFX_AUDIO_CLIP_COUNT >= WAVEFORM_COUNT,
-    "sfx_audio_config.h needs at least 12 clips."
+    "sfx_audio_config.h needs at least 24 clips."
 );
 
 SPISettings dacSpiSettings(DAC_SPI_HZ, MSBFIRST, SPI_MODE1); //SPISettingsはSPI通信条件をまとめる型
@@ -97,7 +97,7 @@ struct LoadedClip { //struct（構造体）は複数のデータを1つにまと
     bool loaded = false; //ロード成功済みか記録
 };
 
-LoadedClip clips[WAVEFORM_COUNT]; //12個分のLoadedClipを作る
+LoadedClip clips[WAVEFORM_COUNT]; //24個分のLoadedClipを作る
 
 // ================================================================
 // Playback state
@@ -370,13 +370,13 @@ void checkPlaybackTimeout() {
     }
 }
 
-int decodeWaveformCommand(uint8_t value) { //Unityの5,10,15,...60を0,1,2,...11へ戻す
+int decodeWaveformCommand(uint8_t value) { //Unityの4,8,12,...96を0,1,2,...23へ戻す
     if (value == 0) return -1;
-    int step = (static_cast<int>(value) + 2) / 5; //+2は丸め誤差を多少許容するため
-    int id = step - 1; //例えば，5 → (5+2)/5 → 1 → ID 0
+    int step = (static_cast<int>(value) + 2) / 4; //+2は丸め誤差を多少許容するため
+    int id = step - 1; //例えば，4 → (4+2)/4 → 1 → ID 0
     if (id < 0 || id >= WAVEFORM_COUNT) return -1;
-    int expected = 5 * (id + 1); //本来あるべき値を再計算
-    if (abs(static_cast<int>(value) - expected) > 2) return -1; //±2を超えてずれていれば無効Commandとする
+    int expected = 4 * (id + 1); //本来あるべき値を再計算
+    if (abs(static_cast<int>(value) - expected) > 1) return -1; //±1を超えてずれていれば無効Commandとする
     return id;
 }
 
@@ -398,7 +398,7 @@ void onVibrate(XboxGamepadOutputReportData data) { //PCからXbox rumble output 
     }
     if (!bleCommandArmed) return; //同じrumble packetが何度も来ても，同じ波形を何度も開始しないようにしている
 
-    int id = decodeWaveformCommand(command); //5～60をID 0～11へ変換
+    int id = decodeWaveformCommand(command); //4～96をID 0～23へ変換
     if (id < 0) return;
 
     bleCommandArmed = false; //一度受理したらロック
@@ -562,7 +562,7 @@ void setup() {
         Serial.println("ERROR: FFat mount failed");
     } else {
         Serial.println("FFat mounted");
-        loadAllClips(); //12波形をFFatからPSRAMへ読み込み
+        loadAllClips(); //24波形をFFatからPSRAMへ読み込み
         printClipList();
     }
 
