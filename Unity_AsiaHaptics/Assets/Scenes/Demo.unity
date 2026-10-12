@@ -4743,6 +4743,7 @@ MonoBehaviour:
   - {fileID: 1824438848}
   - {fileID: 1362712819}
   - {fileID: 1933793207}
+  stopButton: {fileID: 1353302473}
   statusText: {fileID: 516527124}
   oldActiveImages: []
   processActiveImages:
@@ -5736,7 +5737,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!224 &1353302472
 RectTransform:
   m_ObjectHideFlags: 0
@@ -5754,8 +5755,8 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: 300, y: 180}
-  m_SizeDelta: {x: 100, y: 30}
+  m_AnchoredPosition: {x: 360, y: 185}
+  m_SizeDelta: {x: 45, y: 45}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &1353302473
 MonoBehaviour:

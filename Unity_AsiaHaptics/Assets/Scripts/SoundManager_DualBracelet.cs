@@ -26,6 +26,7 @@ public class SoundManager_DualBracelet : MonoBehaviour
     [Header("UI: SE (A / B / C / D / E / F / G / H)")] public Button[] seButtons = new Button[8];
     [Header("UI: Audio (ON / OFF)")] public Button[] audioButtons = new Button[2];
     [Header("UI: Position (1..7)")] public Button[] positionButtons = new Button[7];
+    [Header("UI: Stop")] public Button stopButton;
     [Header("UI: Text")] public Text statusText;
     public GameObject[] oldActiveImages;
 
@@ -48,6 +49,7 @@ public class SoundManager_DualBracelet : MonoBehaviour
     [Header("Timing")]
     public float commandHoldSeconds = 0.06f; //BLEの振動命令を送った後，0.06秒待ってから，SetMotorSpeeds(0, 0)を送る．次の命令を受け付けられる状態へ戻すための信号
     public float defaultStimulusDurationSeconds = 1.5f; //AudioClipの長さが分からない場合に，Unity側でPlaying状態を何秒続けるか
+    public float hapticStartDelaySeconds = 0.05f; //音声に対して振動開始を遅らせる時間．0.05 = 50 ms
 
     private readonly SelectionData selection = new SelectionData();
     private Gamepad leftGamepad;
@@ -55,8 +57,11 @@ public class SoundManager_DualBracelet : MonoBehaviour
     private DemoState state = DemoState.Selecting; //開始時は条件選択状態
 
     private float stimulusEndsAt; //刺激終了予定時刻を保存
+    private float stimulusStartedAt;
     private Coroutine zeroCommandCoroutine;
     private Coroutine positionUpdateCoroutine;
+    private Coroutine stimulusCoroutine;
+    private Coroutine stopCoroutine;
 
     private int playingWaveformId = -1;
     private float playingWaveformCommand = 0f;
@@ -67,6 +72,16 @@ public class SoundManager_DualBracelet : MonoBehaviour
         if (!audioSource) audioSource = GetComponent<AudioSource>();
         audioSource.spatialBlend = 0f; //3D音響ではなく完全な2D音響にする．0 = 2D，1 = 3D
         audioSource.playOnAwake = false; //シーン開始時に勝手に音を再生しない設定
+        if (headphoneClipsRaw != null)
+        {
+            foreach (AudioClip clip in headphoneClipsRaw)
+            {
+                if (clip != null && clip.loadState != AudioDataLoadState.Loaded)
+                {
+                    clip.LoadAudioData();  //遅延対策のため，あらかじめ音声ファイルをロードしておく．
+                }
+            }
+        }
         if (oldActiveImages != null) foreach (GameObject obj in oldActiveImages) if (obj) obj.SetActive(false);
 
         WireUI(); //ボタンを押したときの処理を登録
@@ -79,7 +94,7 @@ public class SoundManager_DualBracelet : MonoBehaviour
     private void OnDisable()
     {
         InputSystem.onDeviceChange -= OnDeviceChange; //無効化時にイベント登録を解除
-        SendZeroHaptics(); //終了時に振動を停止
+        SendStopHaptics(); //Unity終了時はマイコン側の波形再生自体を完全に停止
         if (audioSource) audioSource.Stop(); //音声も停止
     }
 
@@ -97,10 +112,49 @@ public class SoundManager_DualBracelet : MonoBehaviour
         {
             int idx = i;
             if (processButtons[i]) //そのボタンが実際に設定されている場合だけ処理
-                processButtons[i].onClick.AddListener(() => { selection.process = (ProcessType)idx; UpdateAllUI(); }); //() =>はラムダ式．クリック時の処理を記述する無名関数
+                processButtons[i].onClick.AddListener(() =>
+                {
+                    selection.process = (ProcessType)idx;
+                    UpdateAllUI();
+
+                    if (state == DemoState.Playing)
+                    {
+                        StartStimulus();
+                    }
+                }); //() =>はラムダ式．クリック時の処理を記述する無名関数
         }
-        for (int i = 0; i < seButtons.Length; i++) { int idx = i; if (seButtons[i]) seButtons[i].onClick.AddListener(() => { selection.se = idx; UpdateAllUI(); }); }
-        for (int i = 0; i < audioButtons.Length; i++) { int idx = i; if (audioButtons[i]) audioButtons[i].onClick.AddListener(() => { selection.audio = idx; UpdateAllUI(); }); }
+
+        for (int i = 0; i < seButtons.Length; i++)
+        {
+            int idx = i;
+            if (seButtons[i])
+                seButtons[i].onClick.AddListener(() =>
+                {
+                    selection.se = idx;
+                    UpdateAllUI();
+
+                    if (state == DemoState.Playing)
+                    {
+                        StartStimulus();
+                    }
+                });
+        }
+
+        for (int i = 0; i < audioButtons.Length; i++)
+        {
+            int idx = i;
+            if (audioButtons[i])
+                audioButtons[i].onClick.AddListener(() =>
+                {
+                    selection.audio = idx;
+                    UpdateAllUI();
+
+                    if (state == DemoState.Playing && stimulusCoroutine == null)
+                    {
+                        UpdateAudioWhilePlaying();
+                    }
+                });
+        }
 
         for (int i = 0; i < positionButtons.Length; i++)
         {
@@ -113,10 +167,13 @@ public class SoundManager_DualBracelet : MonoBehaviour
 
                     if (state == DemoState.Selecting)
                     {
-                        StartCoroutine(ExecuteStimulusRoutine());
+                        StartStimulus();
                     }
                     else
                     {
+                        if (stimulusCoroutine != null)
+                            return;
+
                         if (positionUpdateCoroutine != null)
                             StopCoroutine(positionUpdateCoroutine);
 
@@ -124,13 +181,18 @@ public class SoundManager_DualBracelet : MonoBehaviour
                     }
                 });
         }
+
+        if (stopButton)
+        {
+            stopButton.onClick.AddListener(StopCurrentStimulus);
+        }
     }
 
     private void OnDeviceChange(InputDevice device, InputDeviceChange change) //InputDeviceはキーボード・マウス・Gamepadなど全入力機器の基底クラス
     {
         if (device is Gamepad) RefreshGamepads(); //変更された機器がGamepadなら再取得
     }
-
+    
     [ContextMenu("Refresh Bracelet Gamepads")] //Inspectorのコンポーネントメニューから，Refresh Bracelet Gamepadsを手動実行できるようにする
     public void RefreshGamepads()
     {
@@ -139,13 +201,91 @@ public class SoundManager_DualBracelet : MonoBehaviour
         UpdateAllUI();
     }
 
+    [ContextMenu("Test Left Bracelet")]
+    private void TestLeftBracelet()
+    {
+        if (leftGamepad == null)
+        {
+            Debug.Log("[TEST] Left Gamepad is null");
+            return;
+        }
+
+        InputSystem.ResumeHaptics();
+
+        Debug.Log(
+            $"[TEST LEFT] name={leftGamepad.displayName}, " +
+            $"deviceId={leftGamepad.deviceId}"
+        );
+
+        //waveform ID 3 = command 16 → 0.16
+        leftGamepad.SetMotorSpeeds(0.5f, 0.16f);
+    }
+
+    [ContextMenu("Test Right Bracelet")]
+    private void TestRightBracelet()
+    {
+        if (rightGamepad == null)
+        {
+            Debug.Log("[TEST] Right Gamepad is null");
+            return;
+        }
+
+        InputSystem.ResumeHaptics();
+
+        Debug.Log(
+            $"[TEST RIGHT] name={rightGamepad.displayName}, " +
+            $"deviceId={rightGamepad.deviceId}"
+        );
+
+        //waveform ID 3 = command 16 → 0.16
+        rightGamepad.SetMotorSpeeds(0.5f, 0.16f);
+    }
+
+    [ContextMenu("Test Stop Both Bracelets")]
+    private void TestStopBothBracelets()
+    {
+        SendZeroHaptics();
+    }
+
     private Gamepad GetGamepadByIndex(int index) { return (index < 0 || index >= Gamepad.all.Count) ? null : Gamepad.all[index]; } //indexが範囲外→ null，範囲内→ Gamepad.all[index]
+
+    private void StartStimulus()
+    {
+        if (stopCoroutine != null)
+        {
+            StopCoroutine(stopCoroutine);
+            stopCoroutine = null;
+        }
+
+        if (stimulusCoroutine != null)
+        {
+            StopCoroutine(stimulusCoroutine);
+            stimulusCoroutine = null;
+        }
+
+        if (positionUpdateCoroutine != null)
+        {
+            StopCoroutine(positionUpdateCoroutine);
+            positionUpdateCoroutine = null;
+        }
+
+        if (zeroCommandCoroutine != null)
+        {
+            StopCoroutine(zeroCommandCoroutine);
+            zeroCommandCoroutine = null;
+        }
+
+        stimulusCoroutine = StartCoroutine(ExecuteStimulusRoutine());
+    }
 
     private IEnumerator ExecuteStimulusRoutine() //IEnumeratorを返すため、Coroutineとして動かせる
     {
         state = DemoState.Playing;
         stimulusEndsAt = float.PositiveInfinity; //実際の刺激終了時刻を設定するまで，Update()による誤終了を防ぐ
         InputSystem.ResumeHaptics(); //Input System側で一時停止されている可能性のあるhaptics（振動出力）を再開．これから振動命令を出すので，GamepadへのHaptics出力を有効な状態に戻しておく
+
+        //マイコン側を次の命令を受け付けられる状態へ戻す
+        SendZeroHaptics();
 
         yield return null; //UIイベント（マウス操作）の影響を断ち切るために1フレーム待つ．マウスのUIクリック処理とGamepadへの振動出力を同じフレームで行わず切り離した
 
@@ -198,22 +338,27 @@ public class SoundManager_DualBracelet : MonoBehaviour
         float leftAmplitude = 1.0f - x;
         float rightAmplitude = x;
 
-        Debug.Log($"[Haptics] Play -> ID:{waveformId}, L_Amp:{leftAmplitude:F2}, R_Amp:{rightAmplitude:F2}, Cmd:{waveformCommand:F2}"); //Unity Consoleへ送信内容を表示．$"..."は文字列補間．:F2は小数点以下2桁表示
-
-        //SetMotorSpeeds()は本来ゲームパッド内部の2つの振動モーターの強さを設定するための関数だが，本システムではGamepad振動機能を通信チャンネルとして利用
-        if (leftGamepad != null) leftGamepad.SetMotorSpeeds(leftAmplitude, waveformCommand); //左ブレスレットへGamepad rumble命令を送る．第1引数 = 振幅，第2引数 = 波形コマンド
-        if (rightGamepad != null) rightGamepad.SetMotorSpeeds(rightAmplitude, waveformCommand);
-
         if (audioSource) //AudioSourceが存在するか確認
         {
             audioSource.Stop(); //前の音が残っていれば停止
-            //Audio ONであり，配列が存在し，範囲内で，実際にAudioClipが設定されている，という4条件を確認
+                                //Audio ONであり，配列が存在し，範囲内で，実際にAudioClipが設定されている，という4条件を確認
             if (selection.audio == 0 && headphoneClipsRaw != null && seIndex >= 0 && seIndex < headphoneClipsRaw.Length && headphoneClipsRaw[seIndex] != null)
             {
                 audioSource.clip = headphoneClipsRaw[seIndex]; //選択された音声を設定
                 audioSource.Play(); //再生開始
             }
         }
+
+        //音声再生処理の後，指定時間待ってから振動を開始
+        yield return new WaitForSecondsRealtime(hapticStartDelaySeconds);
+
+        Debug.Log($"[Haptics] Play -> ID:{waveformId}, L_Amp:{leftAmplitude:F2}, R_Amp:{rightAmplitude:F2}, Cmd:{waveformCommand:F2}"); //Unity Consoleへ送信内容を表示．$"..."は文字列補間．:F2は小数点以下2桁表示
+
+        //SetMotorSpeeds()は本来ゲームパッド内部の2つの振動モーターの強さを設定するための関数だが，本システムではGamepad振動機能を通信チャンネルとして利用
+        if (leftGamepad != null) leftGamepad.SetMotorSpeeds(leftAmplitude, waveformCommand); //左ブレスレットへGamepad rumble命令を送る．第1引数 = 振幅，第2引数 = 波形コマンド
+        if (rightGamepad != null) rightGamepad.SetMotorSpeeds(rightAmplitude, waveformCommand);
+
+        stimulusStartedAt = Time.unscaledTime;
 
         //現在時刻に刺激時間を加えて終了予定時刻を設定．waveformIdは将来波形ごとに時間を変えるために残っているが，現状はseIndexだけで時間を決定
         stimulusEndsAt = Time.unscaledTime + GetStimulusDurationSeconds(waveformId, seIndex);
@@ -222,6 +367,8 @@ public class SoundManager_DualBracelet : MonoBehaviour
         zeroCommandCoroutine = StartCoroutine(ReturnHapticsToZeroAfterDelay()); //新しい0送信Coroutineを開始
 
         UpdateAllUI();
+
+        stimulusCoroutine = null;
     }
 
     private IEnumerator UpdatePositionWhilePlayingRoutine()
@@ -231,9 +378,6 @@ public class SoundManager_DualBracelet : MonoBehaviour
             StopCoroutine(zeroCommandCoroutine);
             zeroCommandCoroutine = null;
         }
-
-        //マイコン側を次の命令を受け付けられる状態へ戻す
-        SendZeroHaptics();
 
         //0,0と新しい振幅命令を別フレームに分ける
         yield return null;
@@ -256,6 +400,95 @@ public class SoundManager_DualBracelet : MonoBehaviour
         zeroCommandCoroutine = StartCoroutine(ReturnHapticsToZeroAfterDelay());
 
         positionUpdateCoroutine = null;
+    }
+
+    private void UpdateAudioWhilePlaying()
+    {
+        if (!audioSource) return;
+
+        if (selection.audio != 0)
+        {
+            audioSource.Stop();
+            return;
+        }
+
+        int seIndex = selection.se;
+
+        if (headphoneClipsRaw == null ||
+            seIndex < 0 ||
+            seIndex >= headphoneClipsRaw.Length ||
+            headphoneClipsRaw[seIndex] == null)
+        {
+            return;
+        }
+
+        AudioClip clip = headphoneClipsRaw[seIndex];
+        float elapsed = Mathf.Max(0f, Time.unscaledTime - stimulusStartedAt);
+
+        audioSource.Stop();
+        audioSource.clip = clip;
+
+        if (elapsed < clip.length)
+        {
+            audioSource.time = Mathf.Min(elapsed, clip.length - 0.001f);
+            audioSource.Play();
+        }
+    }
+
+    private void StopCurrentStimulus()
+    {
+        if (state != DemoState.Playing) return;
+
+        if (stimulusCoroutine != null)
+        {
+            StopCoroutine(stimulusCoroutine);
+            stimulusCoroutine = null;
+        }
+
+        if (positionUpdateCoroutine != null)
+        {
+            StopCoroutine(positionUpdateCoroutine);
+            positionUpdateCoroutine = null;
+        }
+
+        if (zeroCommandCoroutine != null)
+        {
+            StopCoroutine(zeroCommandCoroutine);
+            zeroCommandCoroutine = null;
+        }
+
+        if (stopCoroutine != null)
+        {
+            StopCoroutine(stopCoroutine);
+            stopCoroutine = null;
+        }
+
+        if (audioSource) audioSource.Stop();
+
+        state = DemoState.Selecting;
+        stimulusEndsAt = float.PositiveInfinity;
+        selection.position = -1;
+
+        playingWaveformId = -1;
+        playingWaveformCommand = 0f;
+
+        UpdateAllUI();
+
+        stopCoroutine = StartCoroutine(StopHapticsRoutine());
+    }
+
+    private IEnumerator StopHapticsRoutine()
+    {
+        //command=1.0を停止専用commandとしてマイコンへ送信
+        if (leftGamepad != null) leftGamepad.SetMotorSpeeds(0f, 1.0f);
+        if (rightGamepad != null) rightGamepad.SetMotorSpeeds(0f, 1.0f);
+
+        yield return new WaitForSecondsRealtime(commandHoldSeconds);
+
+        //次の命令を受け付けられる状態へ戻す
+        SendZeroHaptics();
+
+        stopCoroutine = null;
     }
 
     private IEnumerator ReturnHapticsToZeroAfterDelay()
@@ -340,6 +573,15 @@ public class SoundManager_DualBracelet : MonoBehaviour
     {
         if (leftGamepad != null) leftGamepad.SetMotorSpeeds(0f, 0f); //振幅と波形commandを両方0に
         if (rightGamepad != null) rightGamepad.SetMotorSpeeds(0f, 0f);
+    }
+
+    private void SendStopHaptics()
+    {
+        InputSystem.ResumeHaptics();
+
+        //command=1.0を停止専用commandとしてマイコンへ送信
+        if (leftGamepad != null) leftGamepad.SetMotorSpeeds(0f, 1.0f);
+        if (rightGamepad != null) rightGamepad.SetMotorSpeeds(0f, 1.0f);
     }
 
     private void UpdateAllUI()

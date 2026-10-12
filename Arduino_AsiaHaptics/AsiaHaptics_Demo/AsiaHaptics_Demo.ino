@@ -126,6 +126,8 @@ uint8_t masterVolume = DEFAULT_VOLUME;
 // BLE command
 // ================================================================
 
+constexpr uint8_t STOP_COMMAND = 100; //Unityからの停止専用command．0は受付可能状態，4～96は波形ID用なので100を停止用として使用
+
 struct BleCommand { //BLEから受け取った，どの波形か，どの振幅かをまとめる
     int waveformId;
     uint8_t amplitude;
@@ -392,6 +394,15 @@ void onVibrate(XboxGamepadOutputReportData data) { //PCからXbox rumble output 
 
     DBG("RUMBLE weak=%u strong=%u amp=%u cmd=%u\n", data.weakMotorMagnitude, data.strongMotorMagnitude, amplitude, command);
 
+    if (amplitude == 0 && command == STOP_COMMAND) { //Unityから停止専用commandを受信
+        portENTER_CRITICAL(&bleMux);
+        pendingCommand.waveformId = -2; //-2を停止専用IDとして使用
+        pendingCommand.amplitude = 0;
+        bleCommandPending = true;
+        portEXIT_CRITICAL(&bleMux);
+        return;
+    }
+
     if (amplitude == 0 && command == 0) { //Unityの0,0は，再生停止命令ではなく次の新規BLE命令を受付可能にするために使っている
         bleCommandArmed = true;
         return;
@@ -418,6 +429,13 @@ void serviceBleCommand() { //Arduinoのloop()側でpending commandを確認（on
     cmd = pendingCommand; //共有領域から安全に取り出し
     bleCommandPending = false;
     portEXIT_CRITICAL(&bleMux);
+
+    if (cmd.waveformId == -2) { //停止専用commandの場合
+    stopPlayback(false); //波形再生を完全に停止し，playPosなどを初期化
+    bleCommandArmed = true; //次のBLE命令を受け付けられる状態へ戻す
+    DBGLN("STOP playback");
+    return;
+    }
 
     //現在再生中の波形と同じ波形なら，再生位置をリセットせず振幅だけ変更
     if (playing && currentWaveformId == cmd.waveformId) {
@@ -579,7 +597,13 @@ void setup() {
 
     auto* cfg = new XboxSeriesXControllerDeviceConfiguration();
     BLEHostConfiguration hostCfg = cfg->getIdealHostConfiguration(); //Xbox Gamepadに適したBLE Host設定を取得
+    #if DEVICE_ID == 0
+    hostCfg.setSerialNumber("ETGAME-0");
+    #elif DEVICE_ID == 255
+    hostCfg.setSerialNumber("ETGAME-255");
+    #endif
     gamepad = new XboxGamepadDevice(cfg); //Gamepad本体を生成
+
     compositeHID.addDevice(gamepad); //BLE HIDへGamepadを追加
     gamepad->onVibrate.attach(FunctionSlot<XboxGamepadOutputReportData>(onVibrate)); //PCからrumble命令が来たとき，onVibrate()を呼ぶよう登録
     compositeHID.begin(hostCfg); //BLE HIDを開始．ここからPCにXbox Controllerとして見えるようになる
