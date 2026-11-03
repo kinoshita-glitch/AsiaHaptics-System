@@ -15,6 +15,7 @@ public class SoundManager_DualBracelet : MonoBehaviour
         public int se = 0; //効果音．0～7 = A～H
         public int audio = 0; //音声提示のON/OFF．0 = ON，1 = OFF
         public int position = -1; //開始時はPositionだけ未選択
+        public bool isSweep = false; //★追加: 往復変化ボタンが選ばれているかのフラグ
     }
 
     [Header("Headphone Audio")]
@@ -25,6 +26,7 @@ public class SoundManager_DualBracelet : MonoBehaviour
     [Header("UI: SE (A / B / C / D / E / F / G / H)")] public Button[] seButtons = new Button[8];
     [Header("UI: Audio (ON / OFF)")] public Button[] audioButtons = new Button[2];
     [Header("UI: Position (1..7)")] public Button[] positionButtons = new Button[7];
+    [Header("UI: Sweep Position")] public Button sweepButton; //★追加: 往復変化ボタン
     [Header("UI: Stop")] public Button stopButton;
     [Header("UI: Text")] public Text statusText;
 
@@ -45,6 +47,7 @@ public class SoundManager_DualBracelet : MonoBehaviour
     [Header("Timing")]
     public float commandHoldSeconds = 0.06f; //BLEの振動命令を送った後，0.06秒待ってからSetMotorSpeeds(0, 0)を送る．次の命令を受け付けられる状態へ戻すための信号
     public float hapticStartDelaySeconds = 0.05f; //音声に対して振動開始を遅らせる時間．0.05 = 50 ms
+    public float sweepDurationSeconds = 1.5f; //★追加: 1:0から0:1までの片道にかかる時間（秒）
 
     private readonly SelectionData selection = new SelectionData();
     private Gamepad leftGamepad;
@@ -151,6 +154,7 @@ public class SoundManager_DualBracelet : MonoBehaviour
                 positionButtons[i].onClick.AddListener(() =>
                 {
                     selection.position = idx;
+                    selection.isSweep = false; //★追加: 通常ポジション選択時は往復フラグを解除
                     UpdateAllUI();
 
                     if (state == DemoState.Selecting)
@@ -166,6 +170,34 @@ public class SoundManager_DualBracelet : MonoBehaviour
                     }
                 });
             }
+        }
+
+        //★追加: 往復変化ボタンの処理登録
+        if (sweepButton)
+        {
+            sweepButton.onClick.AddListener(() =>
+            {
+                selection.position = -1; // 特定の固定Positionは未選択扱いにする
+                selection.isSweep = true;
+                UpdateAllUI();
+
+                if (state == DemoState.Selecting)
+                {
+                    StartStimulus();
+                }
+                else
+                {
+                    if (stimulusCoroutine != null) return;
+
+                    if (positionUpdateCoroutine != null) StopCoroutine(positionUpdateCoroutine);
+                    if (zeroCommandCoroutine != null)
+                    {
+                        StopCoroutine(zeroCommandCoroutine);
+                        zeroCommandCoroutine = null;
+                    }
+                    positionUpdateCoroutine = StartCoroutine(SweepPositionWhilePlayingRoutine());
+                }
+            });
         }
 
         if (stopButton) stopButton.onClick.AddListener(StopCurrentStimulus);
@@ -231,11 +263,6 @@ public class SoundManager_DualBracelet : MonoBehaviour
         float waveformCommand = waveformCommandValue / 100.0f; //SetMotorSpeeds()用に0～1へ変換
         playingWaveformCommand = waveformCommand;
 
-        //Position 1～7を左右振幅へ変換
-        float x = Mathf.Clamp01(positionIndex / 6.0f);
-        float leftAmplitude = 1.0f - x;
-        float rightAmplitude = x;
-
         if (audioSource) //AudioSourceが存在するか確認
         {
             audioSource.Stop(); //前の音が残っていれば停止
@@ -254,18 +281,73 @@ public class SoundManager_DualBracelet : MonoBehaviour
         //PC音声の出力遅延を補正するため，指定時間待ってから振動を開始
         yield return new WaitForSecondsRealtime(hapticStartDelaySeconds);
 
-        Debug.Log($"[Haptics] Play -> ID:{waveformId}, L_Amp:{leftAmplitude:F2}, R_Amp:{rightAmplitude:F2}, Cmd:{waveformCommand:F2}");
-
-        //SetMotorSpeeds()を振幅＋波形IDを送る通信チャンネルとして使用
-        if (leftGamepad != null) leftGamepad.SetMotorSpeeds(leftAmplitude, waveformCommand);
-        if (rightGamepad != null) rightGamepad.SetMotorSpeeds(rightAmplitude, waveformCommand);
-
         stimulusStartedAt = Time.unscaledTime;
         stimulusEndsAt = Time.unscaledTime + GetStimulusDurationSeconds(seIndex);
 
-        zeroCommandCoroutine = StartCoroutine(ReturnHapticsToZeroAfterDelay());
+        //★変更: 往復変化モードの場合は専用コルーチンに送信処理を委譲する
+        if (selection.isSweep)
+        {
+            positionUpdateCoroutine = StartCoroutine(SweepPositionWhilePlayingRoutine());
+        }
+        else
+        {
+            //Position 1～7を左右振幅へ変換
+            float x = Mathf.Clamp01(positionIndex / 6.0f);
+            float leftAmplitude = 1.0f - x;
+            float rightAmplitude = x;
+
+            Debug.Log($"[Haptics] Play -> ID:{waveformId}, L_Amp:{leftAmplitude:F2}, R_Amp:{rightAmplitude:F2}, Cmd:{waveformCommand:F2}");
+
+            //SetMotorSpeeds()を振幅＋波形IDを送る通信チャンネルとして使用
+            if (leftGamepad != null) leftGamepad.SetMotorSpeeds(leftAmplitude, waveformCommand);
+            if (rightGamepad != null) rightGamepad.SetMotorSpeeds(rightAmplitude, waveformCommand);
+
+            zeroCommandCoroutine = StartCoroutine(ReturnHapticsToZeroAfterDelay());
+        }
+
         UpdateAllUI();
         stimulusCoroutine = null;
+    }
+
+    //★追加: 往復変化用の更新コルーチン
+    private IEnumerator SweepPositionWhilePlayingRoutine()
+    {
+        if (zeroCommandCoroutine != null)
+        {
+            StopCoroutine(zeroCommandCoroutine);
+            zeroCommandCoroutine = null;
+        }
+
+        while (state == DemoState.Playing && Time.unscaledTime < stimulusEndsAt)
+        {
+            //0,0で次のBLE命令を受け付け可能にする
+            SendZeroHaptics();
+            yield return null; //1フレーム待ってマイコン側へ処理させる
+
+            if (state != DemoState.Playing) break;
+
+            //経過時間から0.0～1.0の往復値(PingPong)を計算
+            float elapsed = Mathf.Max(0f, Time.unscaledTime - stimulusStartedAt);
+            float x = Mathf.PingPong(elapsed / sweepDurationSeconds, 1.0f);
+
+            float leftAmplitude = 1.0f - x;
+            float rightAmplitude = x;
+
+            //現在の強度比に対応するハイライトを更新
+            int activeIdx = Mathf.RoundToInt(x * 6.0f);
+            activeIdx = Mathf.Clamp(activeIdx, 0, 6);
+            UpdateHighlightArray(positionActiveImages, activeIdx);
+
+            Debug.Log($"[Haptics] Sweep -> L_Amp:{leftAmplitude:F2}, R_Amp:{rightAmplitude:F2}, Cmd:{playingWaveformCommand:F2}");
+
+            if (leftGamepad != null) leftGamepad.SetMotorSpeeds(leftAmplitude, playingWaveformCommand);
+            if (rightGamepad != null) rightGamepad.SetMotorSpeeds(rightAmplitude, playingWaveformCommand);
+
+            //BLEの帯域を圧迫せず、かつマイコン側がコマンドを処理する十分な時間待機
+            yield return new WaitForSecondsRealtime(commandHoldSeconds);
+        }
+
+        positionUpdateCoroutine = null;
     }
 
     private IEnumerator UpdatePositionWhilePlayingRoutine()
@@ -346,6 +428,7 @@ public class SoundManager_DualBracelet : MonoBehaviour
         state = DemoState.Selecting;
         stimulusEndsAt = float.PositiveInfinity;
         selection.position = -1;
+        selection.isSweep = false; //★追加: 初期化
         playingWaveformCommand = 0f;
         UpdateAllUI();
     }
@@ -363,6 +446,7 @@ public class SoundManager_DualBracelet : MonoBehaviour
 
         state = DemoState.Selecting; //次の条件を選択できる状態へ戻す
         selection.position = -1; //刺激終了後はPositionを未選択状態へ戻す
+        selection.isSweep = false; //★追加: 初期化
         playingWaveformCommand = 0f;
         UpdateAllUI();
     }
@@ -418,7 +502,19 @@ public class SoundManager_DualBracelet : MonoBehaviour
         UpdateHighlightArray(processActiveImages, (int)selection.process);
         UpdateHighlightArray(seActiveImages, selection.se);
         UpdateHighlightArray(audioActiveImages, selection.audio);
-        UpdateHighlightArray(positionActiveImages, selection.position);
+
+        //★変更: 往復変化モードの場合は停止中のみ起点(0)をハイライト
+        if (selection.isSweep)
+        {
+            if (state == DemoState.Selecting)
+            {
+                UpdateHighlightArray(positionActiveImages, 0);
+            }
+        }
+        else
+        {
+            UpdateHighlightArray(positionActiveImages, selection.position);
+        }
     }
 
     private void UpdateHighlightArray(GameObject[] images, int activeIdx)
@@ -435,7 +531,9 @@ public class SoundManager_DualBracelet : MonoBehaviour
         string rConnected = rightGamepad != null ? "Connected" : "Not found";
         char seChar = (char)('A' + selection.se); //selection.se = 0 → A，1 → B
         string audioName = selection.audio == 0 ? "ON" : "OFF";
-        string positionName = selection.position >= 0 ? $"Pos{selection.position + 1}" : "Pos-";
+
+        //★変更: 往復変化状態のテキスト表示
+        string positionName = selection.isSweep ? "Sweep" : (selection.position >= 0 ? $"Pos{selection.position + 1}" : "Pos-");
 
         statusText.text = $"State: {state}\n" +
                           $"Selected: {selection.process}, {seChar}, {audioName}, {positionName}\n" +
