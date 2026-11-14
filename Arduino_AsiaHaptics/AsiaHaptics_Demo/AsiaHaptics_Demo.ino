@@ -23,7 +23,7 @@
 // Device setting
 // ================================================================
 
-#define DEVICE_ID 0 //ブレスレットの識別番号
+#define DEVICE_ID CLOVER //ブレスレットの識別番号
 
 #define STRINGIFY(x) #x
 #define TOSTRING(x) STRINGIFY(x)
